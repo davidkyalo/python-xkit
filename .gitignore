@@ -32,6 +32,7 @@ venv*/
 .coverage
 /coverage/
 .pytest_cache/
+.mypy_cache/
 
 #Folders
 .DS_Store
