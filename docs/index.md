@@ -1,4 +1,4 @@
-# Python xKit
+# Python Zana
 
 
 [![PyPi version][pypi-image]][pypi-link]
@@ -13,10 +13,10 @@ A Python tool kit
 
 ## Installation
 
-Install from [PyPi](https://pypi.org/project/xkit/)
+Install from [PyPi](https://pypi.org/project/zana/)
 
 ```
-pip install xkit
+pip install zana
 ```
 
 ## Documentation
@@ -32,13 +32,13 @@ __This package is still in active development and should not be used in producti
 
 
 
-[docs-link]: https://davidkyalo.github.io/python-xkit/
-[pypi-image]: https://img.shields.io/pypi/v/xkit.svg?color=%233d85c6
-[pypi-link]: https://pypi.python.org/pypi/xkit
-[pyversions-image]: https://img.shields.io/pypi/pyversions/xkit.svg
-[pyversions-link]: https://pypi.python.org/pypi/xkit
-[ci-image]: https://github.com/davidkyalo/python-xkit/actions/workflows/workflow.yaml/badge.svg?event=push&branch=main
-[ci-link]: https://github.com/davidkyalo/python-xkit/actions?query=workflow%3ACI%2FCD+event%3Apush+branch%3Amaster
-[codecov-image]: https://codecov.io/gh/davidkyalo/python-xkit/branch/main/graph/badge.svg
-[codecov-link]: https://codecov.io/gh/davidkyalo/python-xkit
+[docs-link]: https://python-zana.github.io/zana/
+[pypi-image]: https://img.shields.io/pypi/v/zana.svg?color=%233d85c6
+[pypi-link]: https://pypi.python.org/pypi/zana
+[pyversions-image]: https://img.shields.io/pypi/pyversions/zana.svg
+[pyversions-link]: https://pypi.python.org/pypi/zana
+[ci-image]: https://github.com/python-zana/zana/actions/workflows/workflow.yaml/badge.svg?event=push&branch=main
+[ci-link]: https://github.com/python-zana/zana/actions?query=workflow%3ACI%2FCD+event%3Apush+branch%3Amaster
+[codecov-image]: https://codecov.io/gh/python-zana/zana/branch/main/graph/badge.svg
+[codecov-link]: https://codecov.io/gh/python-zana/zana
 

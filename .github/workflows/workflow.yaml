@@ -46,7 +46,7 @@ jobs:
         with:
           token: ${{ secrets.CODECOV_TOKEN }}
           file: ./coverage.xml
-          name: xkit
+          name: zana
           env_vars: OS,PYTHON
           fail_ci_if_error: true
   version-check:

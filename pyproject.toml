@@ -1,21 +1,21 @@
 [tool.poetry]
-name = "xkit"
+name = "zana"
 version = "0.0.0"
 description = "general utility functions and types"
 authors = ["David Kyalo <davidmkyalo@gmail.com>"]
 license = "MIT"
 readme = "README.md"
-repository = "https://github.com/davidkyalo/python-xkit"
-documentation = "https://davidkyalo.github.io/python-xkit"
+repository = "https://github.com/python-zana/zana"
+documentation = "https://python-zana.github.io/zana"
 classifiers = [
     "Programming Language :: Python :: 3.9",
     "Programming Language :: Python :: 3.10",
 ]
 keywords = [
-    "xkit",
+    "zana",
     "toolkit",
 ]
-packages = [{ include = "xkit", from = "src" }]
+packages = [{ include = "zana", from = "src" }]
 
 [tool.poetry.dependencies]
 python = "^3.9"

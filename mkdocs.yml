@@ -1,10 +1,10 @@
-site_name: Python xKit
+site_name: Python Zana
 theme:
   name: material
   custom_dir: docs/override
 
-repo_name: davidkyalo/python-xkit
-repo_url: https://github.com/davidkyalo/python-xkit
+repo_name: python-zana/zana
+repo_url: https://github.com/python-zana/zana
 edit_uri: "blob/main/docs/"
 
 markdown_extensions:
