@@ -15,7 +15,7 @@ keywords = [
     "zana",
     "toolkit",
 ]
-packages = [{ include = "zana", from = "src" }]
+packages = [{ include = "zana" }]
 
 [tool.poetry.dependencies]
 python = "^3.9"
@@ -38,7 +38,7 @@ build-backend = "poetry.core.masonry.api"
 
 
 [tool.pytest.ini_options]
-addopts = "--showlocals --cov=src --cov-report html --cov-config pyproject.toml"
+addopts = "--showlocals --cov=zana --cov-report html --cov-config pyproject.toml"
 asyncio_mode="auto"
 xfail_strict= "True"
 log_level = "DEBUG"
