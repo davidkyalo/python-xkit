@@ -37,7 +37,7 @@ jobs:
         uses: snok/install-poetry@v1.3.1
       - name: Test
         run: |
-          poetry install
+          poetry install --with test
           poetry run pytest
       - name: Export Coverage Report
         run: poetry run coverage xml
@@ -94,7 +94,7 @@ jobs:
           git config user.email 41898282+github-actions[bot]@users.noreply.github.com
           MAJOR=$(echo $(poetry version -s) | cut -d "." -f 1)
           MINOR=$(echo $(poetry version -s) | cut -d "." -f 2)
-          poetry install
+          poetry install --with docs
           poetry run mike deploy --push --update-aliases --branch gh-docs $MAJOR.$MINOR.x latest
   pypi:
     if: github.ref == 'refs/heads/main'

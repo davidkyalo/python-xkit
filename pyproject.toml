@@ -1,6 +1,6 @@
 [tool.poetry]
 name = "zana"
-version = "0.0.2-alpha.0"
+version = "0.0.2"
 description = "general utility functions and types"
 authors = ["David Kyalo <davidmkyalo@gmail.com>"]
 license = "MIT"
@@ -17,23 +17,36 @@ keywords = [
 ]
 packages = [{ include = "zana" }]
 
-[tool.poetry.dependencies]
-python = "^3.9"
-typing-extensions = "^4.4.0"
-
-[tool.poetry.dev-dependencies]
-pytest = "^7.2.0"
-pytest-asyncio = "^0.20.3"
-pytest-cov = "^4.0.0"
-mkdocs = "^1.4.2"
-mkdocs-material = "^8.5.11"
-mike = "^1.1.2"
-black = "^22.12.0"
 
 [build-system]
 requires = ["poetry-core>=1.0.0"]
 build-backend = "poetry.core.masonry.api"
 
+
+
+[tool.poetry.dependencies]
+python = ">=3.9,<4.0"
+typing-extensions = "^4.4.0"
+
+
+[tool.poetry.group.test]
+optional = true
+
+
+[tool.poetry.group.test.dependencies]
+pytest = "^7.2.0"
+pytest-asyncio = "^0.20.3"
+pytest-cov = {version = "^4.0.0", extras = ["toml"]}
+
+
+[tool.poetry.group.docs]
+optional = true
+
+[tool.poetry.group.docs.dependencies]
+mkdocs = "*"
+mkdocs-material = "*"
+mike = "*"
+mkdocstrings = {version = "*", extras = ["python"]}
 
 
 [tool.mypy]

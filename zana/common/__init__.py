@@ -83,7 +83,7 @@ class lazyattr(property, t.Generic[_T_Co]):
         )
         return TypeError(msg)
 
-    def __get__(self, obj: _T, cls: type | None = ...):
+    def __get__(self, obj: _T, cls: t.Union[type, None] = ...):
         if obj is None:
             return self
         name = self.attrname
