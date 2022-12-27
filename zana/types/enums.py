@@ -106,6 +106,7 @@ class FlagEnumMeta(EnumMeta):
         super().__init__(*args, **kwargs)
         if self._member_map_:
             self._all_ = None
+            self.__pseudo_to_inner_members_map__ = {}
     
     @property
     def all(self) -> Self:
@@ -115,20 +116,29 @@ class FlagEnumMeta(EnumMeta):
         return self._all_
 
 
-
 class Flag(Enum, enum.Flag, metaclass=FlagEnumMeta):
     
     all: Self
     _all_: Self
 
-    def __iter__(self):
-        return (m for m in self.__class__ if m in self)
+    __flag_contains = enum.Flag.__contains__
 
-    # def __contains__(self: Self, other: Self) -> bool:
-    #     return not not (self & other)
+    def __contains__(self: Self, other: Self) -> bool:
+        cls = self.__class__
+        return self.__flag_contains(other if other.__class__ is cls else cls(other))
 
     def __len__(self) -> int:
-        return f'{self:b}'.count('1')
+        return len(self.__get_inner_enum_members__(self))
+
+    @classmethod
+    def __get_inner_enum_members__(cls, obj: Self):
+        inner = cls.__pseudo_to_inner_members_map__.get(obj)
+        if inner is None:
+            inner = cls.__pseudo_to_inner_members_map__.setdefault(obj,  dict.fromkeys(m for m in cls if m in obj).keys())
+        return inner
+
+    def __iter__(self):
+        return iter(self.__get_inner_enum_members__(self))
 
 
 class IntFlagChoices(Flag, enum.IntFlag):
