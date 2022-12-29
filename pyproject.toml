@@ -1,6 +1,6 @@
 [tool.poetry]
 name = "zana"
-version = "0.0.3"
+version = "0.0.4"
 description = "general utility functions and types"
 authors = ["David Kyalo <davidmkyalo@gmail.com>"]
 license = "MIT"
