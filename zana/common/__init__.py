@@ -94,7 +94,7 @@ class class_property(t.Generic[_R]):
     __delete__ = _dictpop
 
 
-class lazyattr(property, t.Generic[_T_Co]):
+class cached_attr(property, t.Generic[_T_Co]):
 
     _lock: RLock
     attrname: str

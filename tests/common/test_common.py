@@ -5,7 +5,7 @@ from unittest.mock import Mock
 
 import pytest
 
-from zana.common import class_property, lazyattr, try_import
+from zana.common import cached_attr, class_property, try_import
 
 
 class ExampleType:
@@ -126,7 +126,7 @@ class test_class_property:
 
 
 
-class test_lazyattr:
+class test_cached_attr:
 
     @pytest.fixture()
     def Type(self, TypeWithDict):
@@ -137,7 +137,7 @@ class test_lazyattr:
         class Type:
             mk_foo = Mock()
             has_mutators = False
-            @lazyattr().getter
+            @cached_attr().getter
             def foo(self):
                 assert self.__class__ is Type
                 return self.mk_foo(self)
@@ -150,7 +150,7 @@ class test_lazyattr:
 
             mk_foo = Mock()
             has_mutators = False
-            @lazyattr
+            @cached_attr
             def foo(self):
                 assert self.__class__ is Type
                 return self.mk_foo(self)
@@ -163,7 +163,7 @@ class test_lazyattr:
 
             has_mutators = False
             mk_foo = Mock()
-            @lazyattr
+            @cached_attr
             def foo(self):
                 assert self.__class__ is Type
                 return self.mk_foo(self)
@@ -181,7 +181,7 @@ class test_lazyattr:
             def __dict__(self):
                 return object.__dict__
 
-            @lazyattr
+            @cached_attr
             def foo(self):
                 assert self.__class__ is Type
                 return self.mk_foo(self)
@@ -193,7 +193,7 @@ class test_lazyattr:
         class Type:
             mk_foo = Mock()
             has_mutators = True
-            @lazyattr
+            @cached_attr
             def foo(self):
                 assert self.__class__ is Type
                 return self.mk_foo(self)
@@ -215,12 +215,12 @@ class test_lazyattr:
 
     def test_basic(self, Type: type[_T]):
         obj = Type()
-        assert isinstance(Type.foo, lazyattr)
+        assert isinstance(Type.foo, cached_attr)
         assert obj.foo is obj.mk_foo.return_value is obj.foo
         Type.mk_foo.assert_called_once_with(obj)
 
     def test_set_name(self, Type: type[_T]):
-        attr = lazyattr()
+        attr = cached_attr()
         class Bar:
             x = attr
         attr.__set_name__(Bar, 'x')
