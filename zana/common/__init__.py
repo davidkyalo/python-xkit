@@ -160,13 +160,15 @@ class lazyattr(property, t.Generic[_T_Co]):
     
 
 
-def try_import(modulename: str, qualname: str = None, *, default=NotSet):
+def try_import(modulename: t.Any, qualname: str = None, *, default=NotSet):
     """Try to import and return module object.
 
     Returns None if the module does not exist.
     """
     if not isinstance(modulename, str):
-        return modulename
+        if default is NotSet:
+            raise TypeError(f'cannot import from {modulename.__class__.__name__!r} objects')
+        return default
 
     if qualname is None:
         modulename, _, qualname = modulename.partition(":")

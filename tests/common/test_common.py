@@ -294,20 +294,17 @@ class test_try_import:
         assert try_import(f"{__name__}", "test_try_import.Inner.obj") is test_try_import.Inner.obj
         assert try_import(f"{__name__}:test_try_import.Inner.obj") is test_try_import.Inner.obj
 
-    def test_with_object(self):
-        obj = object()
-        assert try_import(obj) is obj
 
     def test_with_default(self):
         default = object()
-        assert try_import("foobar.awqewqe.asdwqewq", default=default) is default
+        assert try_import(default, default=default) is default
         assert try_import(f"{__name__}:asdwqewq", default=default) is default
+        assert try_import("foobar.awqewqe.asdwqewq", default=default) is default
 
-    @pytest.mark.xfail(raises=(ImportError, AttributeError))
     @pytest.mark.parametrize('path', [
-        'a_fake_package.a_fake_module',
-        'a_fake_package.a_fake_module:a_fake_member',
-        f'{__name__}:a_fake_member',
+        pytest.param(object(), marks=pytest.mark.xfail(raises=TypeError)),
+        pytest.param(f'{__name__}:a_fake_member', marks=pytest.mark.xfail(raises=AttributeError)),
+        pytest.param('a_fake_package.a_fake_module', marks=pytest.mark.xfail(raises=ImportError)),
     ])
     def test_without_default(self, path):
         try_import(path) 
