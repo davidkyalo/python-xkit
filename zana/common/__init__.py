@@ -74,8 +74,6 @@ class class_property(t.Generic[_R]):
                 f"({self.attrname!r} and {name!r})."
             )
 
-    contribute_to_class = __set_name__
-
     def getter(self, getter: abc.Callable[..., _R]) -> "_R | class_property[_R]":
         return self.__class__(getter)
 
