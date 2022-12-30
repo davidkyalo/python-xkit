@@ -1,25 +1,61 @@
+import typing as t
 from collections import abc
 from functools import cache, cached_property, reduce
-from threading import RLock
-import typing as t
-
 from importlib import import_module
-from typing_extensions import Self
-from zana.types import NotSet
+from threading import RLock
 
+from typing_extensions import Self
+
+from zana.types import NotSet
 
 # _P = ParamSpec("_P")
 _R = t.TypeVar("_R")
 _T = t.TypeVar("_T")
-_R_Co = t.TypeVar("_R_Co", covariant=True)
 _T_Co = t.TypeVar("_T_Co", covariant=True)
 
 
-class class_property(t.Generic[_R_Co]):
+def _dict_not_set_error(self, obj: object):
+    msg = (
+        f"No '__dict__' attribute on {obj.__class__.__name__!r} "
+        f"instance to cache {self.attrname!r} property."
+    )
+    return TypeError(msg)
+
+def _dict_not_mutable_error(self, obj: object):
+    msg = (
+        f"No '__dict__' attribute on {obj.__class__.__name__!r} "
+        f"instance to cache {self.attrname!r} property."
+    )
+    return TypeError(msg)
+
+def _dictset(self, obj: object, val: t.Any):
+    try:
+        obj.__dict__[self.attrname] = val
+    except AttributeError:
+        raise self._dict_not_set_error(obj) from None
+    except TypeError:
+        raise self._dict_not_mutable_error(obj) from None
+
+
+def _dictpop(self, obj: object):
+    try:
+        del obj.__dict__[self.attrname]
+    except AttributeError:
+        raise self._dict_not_set_error(obj) from None
+    except TypeError:
+        raise self._dict_not_mutable_error(obj) from None
+    except KeyError:
+        pass
+
+class class_property(t.Generic[_R]):
+    attrname: str = None
+    
+    _dict_not_mutable_error = _dict_not_mutable_error
+    _dict_not_set_error = _dict_not_set_error
+
     def __init__(
         self,
-        getter: abc.Callable[..., _R_Co],
-        # setter: abc.Callable[..., t.NoReturn] = None,
+        getter: abc.Callable[..., _R]=None,
     ) -> None:
         self.__fget__ = getter
 
@@ -29,25 +65,42 @@ class class_property(t.Generic[_R_Co]):
             self.__name__ = info.__name__
             self.__module__ = info.__module__
 
-    def __get__(self, obj: _T, typ: type = None) -> _R_Co:
-        return self.__fget__(typ if obj is None else obj.__class__)
+    def __set_name__(self, owner: type, name: str):
+        if self.attrname is None:
+            self.attrname = name
+        elif name != self.attrname:
+            raise TypeError(
+                "Cannot assign the same class_property to two different names "
+                f"({self.attrname!r} and {name!r})."
+            )
 
-    # def getter(self, getter: abc.Callable[..., _R_Co]) -> "class_property[_R_Co]":
-    #     return self.__class__(getter, self.fset)
+    contribute_to_class = __set_name__
 
-    # def __set__(self, obj: _T, value: t.Any):
-    #     if self.fset is None:
-    #         raise AttributeError("")
-    #     self.fset(obj.__class__, value)
+    def getter(self, getter: abc.Callable[..., _R]) -> "_R | class_property[_R]":
+        return self.__class__(getter)
 
-    # def setter(self, setter: abc.Callable[..., t.NoReturn]):
-    #     return self.__class__(self.fget, setter)
+    def __get__(self, obj: _T, typ: type = None) -> _R:
+        if not obj is None:
+            if not (name := self.attrname) is None:
+                try:
+                    return obj.__dict__[name]
+                except (AttributeError, KeyError):
+                    pass
+            typ = obj.__class__
+                
+        return self.__fget__(typ)
+
+    __set__ = _dictset
+    __delete__ = _dictpop
 
 
 class lazyattr(property, t.Generic[_T_Co]):
 
     _lock: RLock
     attrname: str
+    
+    _dict_not_mutable_error = _dict_not_mutable_error
+    _dict_not_set_error = _dict_not_set_error
 
     if not t.TYPE_CHECKING:
 
@@ -68,20 +121,6 @@ class lazyattr(property, t.Generic[_T_Co]):
                 "Cannot assign the same cached_property to two different names "
                 f"({self.attrname!r} and {name!r})."
             )
-
-    def _dict_not_set_error(self, obj: object):
-        msg = (
-            f"No '__dict__' attribute on {obj.__class__.__name__!r} "
-            f"instance to cache {self.attrname!r} property."
-        )
-        return TypeError(msg)
-
-    def _dict_not_mutable_error(self, obj: object):
-        msg = (
-            f"No '__dict__' attribute on {obj.__class__.__name__!r} "
-            f"instance to cache {self.attrname!r} property."
-        )
-        return TypeError(msg)
 
     def __get__(self, obj: _T, cls: t.Union[type, None] = ...):
         if obj is None:
@@ -110,24 +149,15 @@ class lazyattr(property, t.Generic[_T_Co]):
             if self.fset:
                 return super().__set__(obj, val)
 
-            try:
-                obj.__dict__[self.attrname] = val
-            except AttributeError:
-                raise self._dict_not_set_error(obj) from None
-            except TypeError:
-                raise self._dict_not_mutable_error(obj) from None
+            _dictset(self, obj, val)
 
     def __delete__(self, obj: _T) -> None:
         with self._lock:
             if self.fdel:
                 return super().__delete__(obj)
 
-            try:
-                obj.__dict__.pop(self.attrname, None)
-            except AttributeError:
-                raise self._dict_not_set_error(obj) from None
-            except TypeError:
-                raise self._dict_not_mutable_error(obj) from None
+            _dictpop(self, obj)
+    
 
 
 def try_import(modulename: str, qualname: str = None, *, default=NotSet):
