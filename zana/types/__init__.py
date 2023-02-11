@@ -1,14 +1,14 @@
 import typing as t
 
-from importlib import import_module
 from typing_extensions import Self
 
 
 class NotSetType:
-    __slots__ = ()
+    __slots__ = ("__token__", "__name__", "__weakref__")
+
     __self: t.Final[Self] = None
 
-    def __new__(cls: type[Self]) -> Self:
+    def __new__(cls: type[Self], token=None) -> Self:
         self = cls.__self
         if self is None:
             self = cls.__self = super().__new__(cls)
@@ -23,13 +23,26 @@ class NotSetType:
     __deepcopy__ = __copy__
 
     def __reduce__(self):
-        return f"{__name__}.NotSet"
+        return type(self), (self.__token__,)
 
     def __json__(self):
-        return
+        return self.__token__
 
     def __repr__(self):
-        return "NotSet"
+        return f"NotSet({self.__token__})"
+
+    def __hash__(self) -> int:
+        return hash(self.__token__)
+
+    def __eq__(self, other: object) -> int:
+        if isinstance(other, NotSetType):
+            return other.__token__ == self.__token__
+        return NotImplemented
+
+    def __ne__(self, other: object) -> int:
+        if isinstance(other, NotSetType):
+            return other.__token__ != self.__token__
+        return NotImplemented
 
 
 if t.TYPE_CHECKING:
