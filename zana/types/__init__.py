@@ -1,4 +1,5 @@
 import typing as t
+from collections import abc
 
 from typing_extensions import Self
 
@@ -52,3 +53,30 @@ if t.TYPE_CHECKING:
 
 
 NotSet = NotSetType()
+
+
+class Atomic(abc.Iterable):
+    __slots__ = ()
+
+
+Atomic.register(str)
+Atomic.register(abc.ByteString)
+
+
+class Composite(abc.Iterable):
+    __slots__ = ()
+
+    @classmethod
+    def __subclasshook__(self, sub):
+        if self is Composite:
+            if not issubclass(sub, Atomic):
+                if callable(getattr(sub, "__iter__", None)):
+                    return True
+        return NotImplemented
+
+
+Composite.register(tuple)
+Composite.register(list)
+Composite.register(dict)
+Composite.register(set)
+Composite.register(frozenset)

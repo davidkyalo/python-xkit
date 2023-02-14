@@ -1,6 +1,6 @@
 [tool.poetry]
 name = "zana"
-version = "0.1.4"
+version = "0.1.5"
 description = "general utility functions and types"
 authors = ["David Kyalo <davidmkyalo@gmail.com>"]
 license = "MIT"
@@ -27,6 +27,7 @@ build-backend = "poetry.core.masonry.api"
 [tool.poetry.dependencies]
 python = ">=3.10,<4.0"
 typing-extensions = "^4.4.0"
+attrs = "^22.2.0"
 
 
 [tool.poetry.group.dev]
@@ -35,6 +36,7 @@ optional = true
 
 [tool.poetry.group.dev.dependencies]
 black = "^23.1.0"
+ipython = "^8.10.0"
 
 [tool.poetry.group.test]
 optional = true

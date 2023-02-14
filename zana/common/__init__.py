@@ -1,14 +1,17 @@
 import inspect
 import typing as t
 from collections import abc
+from dataclasses import dataclass
 from functools import reduce
 from importlib import import_module
-from itertools import starmap
+from itertools import chain
 from threading import RLock
 
+import attr
 from typing_extensions import Self
 
 from zana.types import NotSet
+from zana.types.collections import FrozenDict
 
 # _P = ParamSpec("_P")
 _R = t.TypeVar("_R")
@@ -16,6 +19,21 @@ _T = t.TypeVar("_T")
 _KT = t.TypeVar("_KT")
 _VT = t.TypeVar("_VT")
 _T_Co = t.TypeVar("_T_Co", covariant=True)
+
+
+@attr.define(slots=True, weakref_slot=True, frozen=True, cache_hash=True)
+class Callback(t.Generic[_R]):
+    func: abc.Callable[[t.Any], _R]
+    args: tuple = attr.ib(default=(), converter=tuple)
+    kwargs: dict = attr.ib(default=FrozenDict(), converter=FrozenDict)
+
+    def __iter__(self):
+        yield self.func
+        yield self.args
+        yield self.kwargs
+
+    def __call__(self, /, *args, **kwds):
+        return self.func(*args, *self.args, **self.kwargs | kwds)
 
 
 def _dict_not_set_error(self, obj: object):
@@ -212,9 +230,12 @@ def pipe(pipes, /, *args, **kwargs):
     return pipeline(pipes)(*args, **kwargs)
 
 
-def pipeline(pipes, /, *args, **kwargs):
-    """
-    A callable that composes multiple callables into one.
+_args_kwargs_ = (), {}
+
+
+@attr.define(slots=True, weakref_slot=True, frozen=True, cache_hash=True)
+class pipeline(abc.Sequence[Callback[_R]], t.Generic[_R]):
+    """A callable that composes multiple callables into one.
 
     When called on a value, it runs all wrapped callable, returning the
     *last* value.
@@ -224,75 +245,90 @@ def pipeline(pipes, /, *args, **kwargs):
 
     :param pipes: A sequence of callables.
     """
-    ak = (), {}
-    if args:
-        calls = tuple(
-            (call[0], tuple(call[1]) + args, call[2])
-            for pipe in pipes
-            for call in [(pipe,) + ak if callable(pipe) else tuple(pipe) + ak[len(pipe) - 1 :]]
-        )
-    else:
-        calls = tuple(
-            call
-            for pipe in pipes
-            for call in [(pipe,) + ak if callable(pipe) else tuple(pipe) + ak[len(pipe) - 1 :]]
-        )
 
-    if kwargs:
+    pipes: tuple[Callback[_R], ...] = attr.ib(default=(), converter=tuple)
+    args: tuple = attr.ib(default=(), converter=tuple)
+    kwargs: dict = attr.ib(default=FrozenDict(), converter=FrozenDict)
 
-        def func(*a, **kw):
-            nonlocal kwargs, calls
-            obj, a, kw = a[:1], a[1:], kwargs | kw
+    if t.TYPE_CHECKING:
 
-            for fn, f_args, f_kwargs in calls:
-                obj = (fn(*obj, *a, *f_args, **kw | f_kwargs),)
-            if obj:
-                return obj[0]
+        def evolve(
+            self,
+            *,
+            pipes: abc.Iterable[Callback[_R]] = None,
+            args: tuple = None,
+            kwargs: dict = None,
+            **kwds,
+        ) -> Self:
+            ...
 
     else:
+        evolve: t.ClassVar = attr.evolve
 
-        def func(*a, **kw):
-            nonlocal calls
-            obj, a = a[:1], a[1:]
-            for fn, f_args, f_kwargs in calls:
-                obj = (fn(*obj, *a, *f_args, **kw | f_kwargs),)
-            if obj:
-                return obj[0]
+    def __call__(self, /, *args, **kwds) -> _R:
+        it, a, kw = iter(self.pipes), self.args, self.kwargs
+        if (cb := next(it, None)) is not None:
+            obj = cb(*args, *a, **kw | kwds)
+            for cb in it:
+                obj = cb(obj)
+            return obj
+        elif args:
+            return args[0]
 
-    func.calls = calls
+    def __or__(self, o: abc.Callable):
+        if isinstance(o, pipeline):
+            return self.evolve(
+                pipes=self.pipes + o.pipes,
+                args=self.args + o.args,
+                kwargs=self.kwargs | o.kwargs,
+            )
+        elif callable(o):
+            return self.evolve(pipes=self.pipes + (o,))
+        else:
+            return self.evolve(pipes=chain(self.pipes, o))
 
-    if not pipes:
-        # If the converter list is empty, pipe_converter is the identity.
-        A = t.TypeVar("A")
-        func.__annotations__ = {"obj": A, "return": A}
-    else:
-        # Get parameter type.
-        sig = None
-        try:
-            sig = inspect.signature(pipes[0])
-        except (ValueError, TypeError):  # inspect failed
-            pass
-        if sig:
-            func.__annotations__ = {
-                n: p.annotation
-                for n, p in sig.parameters.items()
-                if p.annotation is not inspect.Parameter.empty
-            }
-            if sig.return_annotation is not inspect.Parameter.empty:
-                func.__annotations__["return"] = sig.return_annotation | t.Any
-            # params = list(sig.parameters.values())
-            # if params and params[0].annotation is not inspect.Parameter.empty:
-            #     func.__annotations__["obj"] = params[0].annotation
-        # Get return type.
-        sig = None
-        try:
-            sig = inspect.signature(pipes[-1])
-        except (ValueError, TypeError):  # inspect failed
-            pass
-        if sig and sig.return_annotation is not inspect.Signature().empty:
-            func.__annotations__["return"] = sig.return_annotation
+    def __ror__(self, o: abc.Callable):
+        if isinstance(o, pipeline):
+            return self.evolve(
+                pipes=o.pipes + self.pipes,
+                args=o.args + self.args,
+                kwargs=o.kwargs | self.kwargs,
+            )
+        elif callable(o):
+            return self.evolve(pipes=(o,) + self.pipes)
+        else:
+            return self.evolve(pipes=chain(o, self.pipes))
 
-    return func
+    def __contains__(self, o):
+        return o in self.pipes
+
+    def __iter__(self):
+        return iter(self.pipes)
+
+    def __reversed__(self, o):
+        return reversed(self.pipes)
+
+    def __bool__(self):
+        return True
+
+    def __len__(self):
+        return len(self.pipes)
+
+    @t.overload
+    def __getitem__(self, key: slice) -> Self:
+        ...
+
+    @t.overload
+    def __getitem__(self, key: int) -> Callback[_R]:
+        ...
+
+    def __getitem__(self, key):
+        if isinstance(key, slice):
+            return self.evolve(pipes=self.pipes[key])
+        return self.pipes[key]
+
+    def deconstruct(self):
+        return f"", [self.pipes, *filter(None, (self.args, self.kwargs))]
 
 
 def kw_apply(func, kwds: abc.Mapping[str, _T] | abc.Iterable[tuple[str, _T]]):

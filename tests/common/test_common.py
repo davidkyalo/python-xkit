@@ -365,11 +365,11 @@ class test_pipeline:
         [
             (
                 "object(**attrs).foo['bar']",
-                [partial(kw_apply, SimpleNamespace), attrgetter("foo"), itemgetter("bar")],
+                [SimpleNamespace, attrgetter("foo"), itemgetter("bar")],
                 (),
                 {},
-                ({"foo": {"bar": "object(**attrs).foo['bar']"}},),
-                {},
+                (),
+                {"foo": {"bar": "object(**attrs).foo['bar']"}},
             )
         ],
     )
