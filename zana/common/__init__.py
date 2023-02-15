@@ -248,7 +248,7 @@ def _to_slice(val):
     if isinstance(val, slice):
         return val
     elif isinstance(val, int):
-        return slice(val, val + 1)
+        return slice(val, (val + 1) or None)
     elif val is not None:
         return slice(*val)
 
