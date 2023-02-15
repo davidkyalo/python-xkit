@@ -61,9 +61,7 @@ class ReadonlyMapping(abc.Mapping[_TK, _TV]):
 
     @classmethod
     def define(self: type[Self], cls: _T) -> _T | type[Self]:
-        print(f"\n{cls.__module__}.{cls.__name__}:")
         for name in self.__local_vars:
-            print(" ++", name)
             setattr(cls, name, getattr(self, name))
         self.register(cls)
         return cls

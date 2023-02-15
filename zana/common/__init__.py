@@ -19,7 +19,7 @@ _VT = t.TypeVar("_VT")
 _T_Co = t.TypeVar("_T_Co", covariant=True)
 
 
-@attr.define(slots=True, weakref_slot=True, frozen=True, cache_hash=True)
+@attr.define(slots=True, weakref_slot=True, hash=True, cache_hash=True)
 class Callback(t.Generic[_R]):
     func: abc.Callable[[t.Any], _R]
     args: tuple = attr.ib(default=(), converter=tuple)
@@ -32,6 +32,17 @@ class Callback(t.Generic[_R]):
 
     def __call__(self, /, *args, **kwds):
         return self.func(*args, *self.args, **self.kwargs | kwds)
+
+    @property
+    def __wrapped__(self):
+        return self.func
+
+    def deconstruct(self):
+        return f"{self.__class__.__module__}.{self.__class__.__name__}", [
+            self.func,
+            self.args,
+            self.kwargs,
+        ]
 
 
 def _dict_not_set_error(self, obj: object):
@@ -231,7 +242,7 @@ def pipe(pipes, /, *args, **kwargs):
 _args_kwargs_ = (), {}
 
 
-@attr.define(slots=True, weakref_slot=True, frozen=True, cache_hash=True)
+@attr.define(slots=True, weakref_slot=True, hash=True, cache_hash=True)
 class pipeline(abc.Sequence[Callback[_R]], t.Generic[_R]):
     """A callable that composes multiple callables into one.
 
@@ -272,6 +283,10 @@ class pipeline(abc.Sequence[Callback[_R]], t.Generic[_R]):
             return obj
         elif args:
             return args[0]
+
+    @property
+    def __wrapped__(self):
+        return self.pipes and self[-1]
 
     def __or__(self, o: abc.Callable):
         if isinstance(o, pipeline):
@@ -326,7 +341,11 @@ class pipeline(abc.Sequence[Callback[_R]], t.Generic[_R]):
         return self.pipes[key]
 
     def deconstruct(self):
-        return f"", [self.pipes, *filter(None, (self.args, self.kwargs))]
+        return f"{self.__class__.__module__}.{self.__class__.__name__}", [
+            self.pipes,
+            self.args,
+            self.kwargs,
+        ]
 
 
 def kw_apply(func, kwds: abc.Mapping[str, _T] | abc.Iterable[tuple[str, _T]]):
