@@ -249,7 +249,7 @@ def _to_slice(val):
         return val
     elif isinstance(val, int):
         return slice(val, val + 1)
-    else:
+    elif val is not None:
         return slice(*val)
 
 
@@ -278,19 +278,15 @@ class pipeline(abc.Sequence[Callback[_R]], t.Generic[_R]):
 
     def __call__(self, /, *args, **kwds) -> _R:
         pre, args, kwds, pipes = args[:1], args[1:] + self.args, self.kwargs | kwds, self.pipes
-        if taps := (args or kwds) and pipes[self.tap] or None:
-            tapped = len(taps)
-            if tapped == len(pipes):
-                for cb in pipes:
+        count = len(self)
+        if taps := count and (args or kwds) and self.tap:
+            start, stop, _ = taps.indices(count)
+            for i, cb in enumerate(pipes):
+                if start <= i < stop:
                     pre = (cb(*pre, *args, **kwds),)
-            else:
-                for cb in pipes:
-                    if tapped > 0 and cb in taps:
-                        tapped -= 1
-                        pre = (cb(*pre, *args, **kwds),)
-                    else:
-                        pre = (cb(*pre),)
-        elif pipes:
+                else:
+                    pre = (cb(*pre),)
+        elif count:
             for cb in pipes:
                 pre = (cb(*pre),)
         elif not pre:
