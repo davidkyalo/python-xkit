@@ -1,5 +1,3 @@
-import typing as t
-from functools import partial
 from operator import attrgetter, itemgetter
 from types import SimpleNamespace
 from unittest.mock import CallableMixin
