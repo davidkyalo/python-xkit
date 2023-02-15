@@ -7,14 +7,7 @@ from unittest.mock import CallableMixin, Mock
 
 import pytest
 
-from zana.common import (
-    cached_attr,
-    class_property,
-    kw_apply,
-    pipe,
-    pipeline,
-    try_import,
-)
+from zana.common import cached_attr, class_property, try_import
 
 
 class ExampleType:
@@ -356,46 +349,3 @@ class test_try_import:
     )
     def test_without_default(self, path):
         try_import(path)
-
-
-class test_pipeline:
-    @pytest.mark.parametrize(
-        "expected, pipes, args, kwargs, call_args, call_kwargs",
-        [
-            (
-                "object(**attrs).foo['bar']",
-                [SimpleNamespace, attrgetter("foo"), itemgetter("bar")],
-                (),
-                {},
-                (),
-                {"foo": {"bar": "object(**attrs).foo['bar']"}},
-            )
-        ],
-    )
-    def test(self, expected, pipes, args, kwargs, call_args, call_kwargs):
-        pp = pipeline(pipes, *(args or ()), **(kwargs or {}))
-        result = pp(*(call_args or ()), **(call_kwargs or {}))
-        if callable(expected) and not isinstance(expected, CallableMixin):
-            expected(result)
-        else:
-            assert result == expected
-
-
-class test_pipe:
-    @pytest.mark.parametrize(
-        "expected, pipes, args, kwargs",
-        [
-            (
-                "object(**attrs).foo['bar']",
-                [partial(kw_apply, SimpleNamespace), attrgetter("foo"), itemgetter("bar")],
-                ({"foo": {"bar": "object(**attrs).foo['bar']"}},),
-                {},
-            )
-        ],
-    )
-    def test(self, expected, pipes, args, kwargs):
-        result = pipe(pipes, *(args or ()), **(kwargs or {}))
-        if callable(expected) and not isinstance(expected, CallableMixin):
-            expected(result)
-        else:
-            assert result == expected

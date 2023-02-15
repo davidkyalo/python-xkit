@@ -1,12 +1,15 @@
+import operator
+import sys
 import typing as t
 from collections import abc
 from functools import reduce
 from importlib import import_module
 from itertools import chain
+from operator import attrgetter
 from threading import RLock
 
 import attr
-from typing_extensions import Self
+from typing_extensions import ParamSpec, Self
 
 from zana.types import NotSet
 from zana.types.collections import FrozenDict
@@ -17,6 +20,8 @@ _T = t.TypeVar("_T")
 _KT = t.TypeVar("_KT")
 _VT = t.TypeVar("_VT")
 _T_Co = t.TypeVar("_T_Co", covariant=True)
+
+_P = ParamSpec("_P")
 
 
 @attr.define(slots=True, weakref_slot=True, hash=True, cache_hash=True)
@@ -239,7 +244,16 @@ def pipe(pipes, /, *args, **kwargs):
     return pipeline(pipes)(*args, **kwargs)
 
 
-_args_kwargs_ = (), {}
+def _to_slice(val):
+    if isinstance(val, slice):
+        return val
+    elif isinstance(val, int):
+        return slice(val, val + 1)
+    else:
+        return slice(*val)
+
+
+_slice_to_tuple = attrgetter("start", "stop", "step")
 
 
 @attr.define(slots=True, weakref_slot=True, hash=True, cache_hash=True)
@@ -258,31 +272,30 @@ class pipeline(abc.Sequence[Callback[_R]], t.Generic[_R]):
     pipes: tuple[Callback[_R], ...] = attr.ib(default=(), converter=tuple)
     args: tuple = attr.ib(default=(), converter=tuple)
     kwargs: dict = attr.ib(default=FrozenDict(), converter=FrozenDict)
-
-    if t.TYPE_CHECKING:
-
-        def evolve(
-            self,
-            *,
-            pipes: abc.Iterable[Callback[_R]] = None,
-            args: tuple = None,
-            kwargs: dict = None,
-            **kwds,
-        ) -> Self:
-            ...
-
-    else:
-        evolve: t.ClassVar = attr.evolve
+    tap: int | slice | tuple[int, int, int] = attr.ib(
+        default=_to_slice(0), converter=_to_slice, cmp=_slice_to_tuple
+    )
 
     def __call__(self, /, *args, **kwds) -> _R:
-        it, a, kw = iter(self.pipes), self.args, self.kwargs
-        if (cb := next(it, None)) is not None:
-            obj = cb(*args, *a, **kw | kwds)
-            for cb in it:
-                obj = cb(obj)
-            return obj
-        elif args:
-            return args[0]
+        pre, args, kwds, pipes = args[:1], args[1:] + self.args, self.kwargs | kwds, self.pipes
+        if taps := (args or kwds) and pipes[self.tap] or None:
+            tapped = len(taps)
+            if tapped == len(pipes):
+                for cb in pipes:
+                    pre = (cb(*pre, *args, **kwds),)
+            else:
+                for cb in pipes:
+                    if tapped > 0 and cb in taps:
+                        tapped -= 1
+                        pre = (cb(*pre, *args, **kwds),)
+                    else:
+                        pre = (cb(*pre),)
+        elif pipes:
+            for cb in pipes:
+                pre = (cb(*pre),)
+        elif not pre:
+            pre = (None,)
+        return pre[0]
 
     @property
     def __wrapped__(self):
@@ -290,11 +303,7 @@ class pipeline(abc.Sequence[Callback[_R]], t.Generic[_R]):
 
     def __or__(self, o: abc.Callable):
         if isinstance(o, pipeline):
-            return self.evolve(
-                pipes=self.pipes + o.pipes,
-                args=self.args + o.args,
-                kwargs=self.kwargs | o.kwargs,
-            )
+            return self.__class__((self, o), tap=slice(None))
         elif callable(o):
             return self.evolve(pipes=self.pipes + (o,))
         else:
@@ -302,11 +311,7 @@ class pipeline(abc.Sequence[Callback[_R]], t.Generic[_R]):
 
     def __ror__(self, o: abc.Callable):
         if isinstance(o, pipeline):
-            return self.evolve(
-                pipes=o.pipes + self.pipes,
-                args=o.args + self.args,
-                kwargs=o.kwargs | self.kwargs,
-            )
+            return self.__class__((o, self), tap=slice(None))
         elif callable(o):
             return self.evolve(pipes=(o,) + self.pipes)
         else:
@@ -345,7 +350,24 @@ class pipeline(abc.Sequence[Callback[_R]], t.Generic[_R]):
             self.pipes,
             self.args,
             self.kwargs,
+            _slice_to_tuple(self.tap),
         ]
+
+    if t.TYPE_CHECKING:
+
+        def evolve(
+            self,
+            *,
+            pipes: abc.Iterable[Callback[_R]] = None,
+            args: tuple = None,
+            kwargs: dict = None,
+            tap: int | slice | tuple[int, int, int] = None,
+            **kwds,
+        ) -> Self:
+            ...
+
+    else:
+        evolve: t.ClassVar = attr.evolve
 
 
 def kw_apply(func, kwds: abc.Mapping[str, _T] | abc.Iterable[tuple[str, _T]]):
@@ -363,6 +385,15 @@ def apply(
         return func(*args)
     else:
         return func(*args, **(kwargs if isinstance(kwargs, (dict, abc.Mapping)) else dict(kwargs)))
+
+
+if sys.version_info < (3, 11):
+
+    def call(obj: abc.Callable[_P, _R], *args: _P.args, **kwargs: _P.kwargs) -> _R:
+        return obj(*args, **kwargs)
+
+else:
+    call = operator.call
 
 
 def kwarg_map(func, it: abc.Iterable[abc.Mapping[str, _T] | abc.Iterable[tuple[str, _T]]]):
