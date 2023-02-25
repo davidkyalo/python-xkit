@@ -11,8 +11,8 @@ from threading import RLock
 import attr
 from typing_extensions import ParamSpec, Self
 
+import zana.zana  # type: ignore
 from zana.types import NotSet
-from zana.types.collections import FrozenDict
 
 # _P = ParamSpec("_P")
 _R = t.TypeVar("_R")
@@ -24,30 +24,33 @@ _T_Co = t.TypeVar("_T_Co", covariant=True)
 _P = ParamSpec("_P")
 
 
-@attr.define(slots=True, weakref_slot=True, hash=True, cache_hash=True)
-class Callback(t.Generic[_R]):
-    func: abc.Callable[[t.Any], _R]
-    args: tuple = attr.ib(default=(), converter=tuple)
-    kwargs: dict = attr.ib(default=FrozenDict(), converter=FrozenDict)
+class descriptor(property, t.Generic[_T_Co]):
+    attrname = None
 
-    def __iter__(self):
-        yield self.func
-        yield self.args
-        yield self.kwargs
-
-    def __call__(self, /, *args, **kwds):
-        return self.func(*args, *self.args, **self.kwargs | kwds)
+    def __init__(self, *a, **kw) -> None:
+        super().__init__(*a, **kw)
 
     @property
-    def __wrapped__(self):
-        return self.func
+    def __name__(self):
+        return self.attrname or self.fget.__name__
 
-    def deconstruct(self):
-        return f"{self.__class__.__module__}.{self.__class__.__name__}", [
-            self.func,
-            self.args,
-            self.kwargs,
-        ]
+    @property
+    def takes_self(self) -> None:
+        return self
+
+    def __set_name__(self, owner: type, name: str):
+        if name != (self.attrname or name):
+            raise TypeError(
+                "Cannot assign the same class_property to two different names "
+                f"({self.attrname!r} and {name!r})."
+            )
+        self.attrname = name
+
+    def __get__(self, obj, cls=None):
+        return self.fget(obj, self, cls)
+
+    def __call__(this, /, self, *args, **kwargs):
+        return this.__get__(self)(*args, **kwargs)
 
 
 def _dict_not_set_error(self, obj: object):
@@ -251,6 +254,35 @@ def _to_slice(val):
         return slice(val, (val + 1) or None)
     elif val is not None:
         return slice(*val)
+
+
+from zana.types.collections import FrozenDict
+
+
+@attr.define(slots=True, weakref_slot=True, hash=True, cache_hash=True)
+class Callback(t.Generic[_R]):
+    func: abc.Callable[[t.Any], _R]
+    args: tuple = attr.ib(default=(), converter=tuple)
+    kwargs: dict = attr.ib(default=FrozenDict(), converter=FrozenDict)
+
+    def __iter__(self):
+        yield self.func
+        yield self.args
+        yield self.kwargs
+
+    def __call__(self, /, *args, **kwds):
+        return self.func(*args, *self.args, **self.kwargs | kwds)
+
+    @property
+    def __wrapped__(self):
+        return self.func
+
+    def deconstruct(self):
+        return f"{self.__class__.__module__}.{self.__class__.__name__}", [
+            self.func,
+            self.args,
+            self.kwargs,
+        ]
 
 
 _slice_to_tuple = attrgetter("start", "stop", "step")

@@ -13,13 +13,15 @@ Parts of this module is Copyright by Werkzeug Team.
 """
 
 import sys
+import typing as t
 from abc import abstractmethod
 from collections import abc
 from functools import cache, reduce
 from types import GenericAlias, ModuleType
-import typing as t
 
-from typing_extensions import Self, ParamSpec, Concatenate
+from typing_extensions import Concatenate, ParamSpec, Self
+
+import zana.zana  # type: ignore
 
 __all__ = ("Proxy", "PromiseProxy", "try_import", "unproxy")
 
@@ -46,7 +48,6 @@ def _default_cls_attr(name, type_, cls_value=_empty):
     # -- See Issue #1087.
 
     def __new__(cls, getter):
-
         instance = type_.__new__(cls, cls_value)
         instance.__getter = getter
         return instance

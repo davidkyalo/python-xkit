@@ -5,7 +5,7 @@ from unittest.mock import Mock
 
 import pytest
 
-from zana.common import cached_attr, class_property, try_import
+from zana.util import cached_attr, class_property, try_import
 
 
 class ExampleType:
