@@ -83,7 +83,7 @@ class Interface(ABC):
                 if self is cls:
                     names = self.__abstractmethods__ if members is None else members
                     print(
-                        f"{self}:\n -> issubclass({sub.__name__},  {cls.__name__}) = "
+                        f"-> issubclass({sub.__name__},  {cls.__name__}) = "
                         f"{predicate.__name__}({sub.__name__}, {[*names]}, {check}) is "
                         f"{expected} = {predicate(sub, names, check) is expected}\n"
                     )

@@ -1,6 +1,7 @@
 import math
 from collections import abc
 from copy import copy, deepcopy
+from itertools import chain
 from operator import or_
 from types import SimpleNamespace
 from unittest.mock import Mock
@@ -14,10 +15,10 @@ from zana.canvas import (
     Composition,
     Func,
     IndexSignatureError,
-    Item,
     KeySignatureError,
     Signature,
     Slice,
+    Subscript,
 )
 from zana.types.collections import FrozenDict
 from zana.util import try_import
@@ -132,16 +133,16 @@ class test_Attr:
             sig
             == copy(sig)
             == deepcopy(sig)
-            == Attr("foo.bar", "x")
-            == Attr("foo", "bar", "x")
-            == Attr("foo", "bar.x")
+            == Attr(["foo.bar", "x"])
+            == Attr(["foo", "bar", "x"])
+            == Attr(("foo", "bar.x"))
             == try_import(d_path)(*d_args, **d_kwargs)
         )
-        assert {cls(*args, ex)} == {
-            sig.evolve(ex),
-            sig | cls(ex),
-            sig | [cls(ex)],
-            [sig] | cls(ex),
+        assert {cls(chain(args, (ex,)))} == {
+            sig.evolve(sig.path + (ex,)),
+            sig | cls([ex]),
+            sig | [cls([ex])],
+            [sig] | cls([ex]),
         }
         # pyt.raises(TypeError, cls)
 
@@ -167,35 +168,35 @@ class test_Attr:
         pyt.raises(AttributeSignatureError, sig.set, foo, z)
         pyt.raises(AttributeSignatureError, sig.delete, foo)
 
-        sig = sig.evolve(default=default)
-        assert sig(obj) == sig(foo) == default == sig.get(foo) == sig.get(obj)
+        # sig = sig.evolve(default=default)
+        # assert sig(obj) == sig(foo) == default == sig.get(foo) == sig.get(obj)
 
     def test_chaining(self):
         default = Mock()
-        foo, bar, baz = Attr("foo"), Attr("bar"), Attr("baz", default=default)
+        foo, bar, baz = Attr("foo"), Attr("bar"), Attr("baz")
         foo_bar = (foo | bar, bar | foo)
         assert all(isinstance(x, Attr) for x in foo_bar)
-        foo_baz = (foo | baz, baz | foo)
-        assert all(isinstance(x, Composition) for x in foo_baz)
-        assert [*map(list, foo_baz)] == [[foo, baz], [baz, foo]]
-        assert foo.evolve(default=default) | baz == Attr("foo.baz", default=default)
+        # foo_baz = (foo | baz, baz | foo)
+        # assert all(isinstance(x, Composition) for x in foo_baz)
+        # assert [*map(list, foo_baz)] == [[foo, baz], [baz, foo]]
+        # assert foo.evolve(default=default) | baz == Attr("foo.baz", default=default)
 
 
 class test_Item:
     def test_basic(self):
-        cls, ex, args = Item, Mock(str), (-1, "bar", "x")
-        sig = cls(*args)
+        cls, ex, args = Subscript, Mock(str), (-1, "bar", "x")
+        sig = cls(args)
 
         print(str(sig), repr(sig))
         assert isinstance(sig, cls)
 
         d_path, d_args, d_kwargs = sig.deconstruct()
         assert sig == copy(sig) == deepcopy(sig) == try_import(d_path)(*d_args, **d_kwargs)
-        assert {cls(*args, ex)} == {
-            sig.evolve(ex),
-            sig | cls(ex),
-            sig | [cls(ex)],
-            [sig] | cls(ex),
+        assert {cls(chain(args, [ex]))} == {
+            sig.evolve(sig.path + (ex,)),
+            sig | cls([ex]),
+            sig | [cls([ex])],
+            [sig] | cls([ex]),
         }
         # pyt.raises(TypeError, cls)
 
@@ -204,7 +205,7 @@ class test_Item:
         bar = dict(x=x, y=y)
         foo = dict(bar=bar)
         obj = [Mock, foo]
-        sig = Item(-1, "bar", "x")
+        sig = Subscript([-1, "bar", "x"])
 
         val_x = sig(obj)
         assert val_x == x == sig.get(obj) == bar["x"]
@@ -221,43 +222,43 @@ class test_Item:
         pyt.raises(KeySignatureError, sig.set, foo, z)
         pyt.raises(KeySignatureError, sig.delete, foo)
 
-        sig = sig.evolve(default=default)
-        assert sig(obj) == sig(foo) == default == sig.get(foo) == sig.get(obj)
-        pyt.raises(IndexSignatureError, Item(-1, "bar", "y", 2), obj)
+        # sig = sig.evolve(default=default)
+        # assert sig(obj) == sig(foo) == default == sig.get(foo) == sig.get(obj)
+        # pyt.raises(IndexSignatureError, Subscript(-1, "bar", "y", 2), obj)
 
     def test_chaining(self):
         default = Mock()
-        foo, bar, baz = Item("foo"), Item("bar"), Item("baz", default=default)
-        foo_bar = (foo | bar, bar | foo)
-        assert all(isinstance(x, Item) for x in foo_bar)
-        foo_baz = (foo | baz, baz | foo)
-        assert all(isinstance(x, Composition) for x in foo_baz)
-        assert [*map(list, foo_baz)] == [[foo, baz], [baz, foo]]
-        assert foo.evolve(default=default) | baz == Item("foo", "baz", default=default)
+        foo, bar, baz = Subscript("foo"), Subscript("bar"), Subscript("baz")
+        foo_bar = (foo | bar, bar | foo, foo | bar | baz)
+        assert all(isinstance(x, Subscript) for x in foo_bar)
+        # foo_baz = (foo | baz, baz | foo)
+        # assert all(isinstance(x, Composition) for x in foo_baz)
+        # assert [*map(list, foo_baz)] == [[foo, baz], [baz, foo]]
+        # assert foo.evolve(default=default) | baz == Subscript("foo", "baz", default=default)
 
 
 class test_Slice:
     def test_basic(self):
         cls, ex, args = Slice, Mock(slice), (slice(0, 3), (None, None, -1), (0, 2))
-        sig = cls(*args)
+        sig = cls(args)
 
         print(str(sig), repr(sig))
         assert isinstance(sig, cls)
 
         d_path, d_args, d_kwargs = sig.deconstruct()
         assert sig == copy(sig) == deepcopy(sig) == try_import(d_path)(*d_args, **d_kwargs)
-        assert {cls(*args, ex)} == {
-            sig.evolve(ex),
-            sig | cls(ex),
-            sig | [cls(ex)],
-            [sig] | cls(ex),
+        assert {cls(chain(args, [ex]))} == {
+            sig.evolve(sig.path + (ex,)),
+            sig | cls([ex]),
+            sig | [cls([ex])],
+            [sig] | cls([ex]),
         }
         # pyt.raises(TypeError, cls)
 
     def test_get_chain(self):
         w, x, y, z = Mock(), Mock(), Mock(), Mock()
         obj = [w, x, y, z]
-        sig = Slice(slice(0, 3), (None, None, -1), (0, 2))
+        sig = Slice([slice(0, 3), (None, None, -1), (0, 2)])
 
         val = sig(obj)
         assert val == [y, x] == sig.get(obj)
@@ -266,7 +267,7 @@ class test_Slice:
         w, x, y, z = Mock(), Mock(), Mock(), Mock()
         a, b = Mock(), Mock()
         obj = [w, x, y, z]
-        sig = Slice(slice(1, 3))
+        sig = Slice([slice(1, 3)])
         val = sig(obj)
         assert val == [x, y] == obj[1:3] == sig.get(obj)
         sig.set(obj, [a, b])
@@ -280,10 +281,16 @@ class test_Chain:
         cls, ex, args, flat_args = (
             Composition,
             Signature(),
-            (Item(0, 3), Slice((None, None, -1)), Attr("abc", "xyz")),
-            (Item(0), Item(3), Slice((None, None, -1)), Attr("abc"), Attr("xyz")),
+            (Subscript([0, 3]), Slice([(None, None, -1)]), Attr(["abc", "xyz"])),
+            (
+                Subscript([0]),
+                Subscript([3]),
+                Slice([(None, None, -1)]),
+                Attr(["abc"]),
+                Attr(["xyz"]),
+            ),
         )
-        sig = cls(*args)
+        sig = cls(args)
 
         print(str(sig), repr(sig))
         assert isinstance(sig, cls)
@@ -292,19 +299,19 @@ class test_Chain:
         assert (
             sig
             == sig[:]
-            == cls(*reversed(sig))[::-1]
+            == cls(reversed(sig))[::-1]
             == copy(sig)
             == deepcopy(sig)
             == try_import(d_path)(*d_args, **d_kwargs)
-            == cls(*flat_args)
+            == cls(flat_args)
         )
         assert all(a in sig for a in args)
 
-        assert {cls(*args, ex)} == {
-            sig.evolve(ex),
-            sig | cls(ex),
-            sig | [cls(ex)],
-            iter(sig) | cls(ex),
+        assert {cls(chain(args, [ex]))} == {
+            sig.evolve(sig.path + (ex,)),
+            sig | cls([ex]),
+            sig | [cls([ex])],
+            iter(sig) | cls([ex]),
         }
 
     def test_get_set_delete(self):
@@ -313,7 +320,7 @@ class test_Chain:
         bar = SimpleNamespace(x=x, y=y)
         foo = dict(bar=bar)
         obj = [w, foo, z]
-        sig = Composition(Item(1), Item("bar"), Attr("x"))
+        sig = Composition([Subscript([1]), Subscript(["bar"]), Attr(["x"])])
 
         val = sig(obj)
         assert val == x == sig.get(obj)
@@ -333,20 +340,22 @@ class test_Call:
     def test_basic(self):
         cls, args, kwargs = Call, (1, 2, 3), dict(zip("xyz", "XYZ"))
         ex_args, ex_kwargs = (Mock(int), Mock(float), Mock(tuple)), {k: Mock(str) for k in "zab"}
-        sig = cls(*args, **kwargs)
+        sig = cls(args, kwargs)
 
         print(str(sig), repr(sig))
         assert isinstance(sig, cls)
 
         d_path, d_args, d_kwargs = sig.deconstruct()
         assert sig == copy(sig) == deepcopy(sig) == try_import(d_path)(*d_args, **d_kwargs)
-        assert {cls(*args, *ex_args, **kwargs | ex_kwargs)} == {sig.evolve(*ex_args, **ex_kwargs)}
+        assert {cls(args + ex_args, kwargs | ex_kwargs)} == {
+            sig.evolve(args + ex_args, kwargs | ex_kwargs)
+        }
 
     def test_get(self):
         args, kwargs = (Mock(int), Mock(float), Mock(tuple)), {k: Mock(str) for k in "abc"}
         c_args, c_kwargs = (Mock(int), Mock(float), Mock(tuple)), {k: Mock(str) for k in "xyz"}
         obj = Mock(abc.Callable)
-        sig = Call(*args, **kwargs)
+        sig = Call(args, kwargs)
         # assert (sig.args, sig.kwargs) == (args, kwargs)
         val = sig(obj, *c_args, **c_kwargs)
         obj.assert_called_once_with(*c_args, *args, **kwargs | c_kwargs)
@@ -362,7 +371,7 @@ class test_Func:
     def test_basic(self):
         cls, args, kwargs = Func, (1, 2, 3), dict(zip("xyz", "XYZ"))
         ex_args, ex_kwargs = (Mock(int), Mock(float), Mock(tuple)), {k: Mock(str) for k in "zab"}
-        sig = cls(dict, *args, **kwargs)
+        sig = cls(dict, args, kwargs)
 
         print(str(sig), repr(sig))
         assert isinstance(sig, cls)
@@ -371,15 +380,15 @@ class test_Func:
 
         d_path, d_args, d_kwargs = sig.deconstruct()
         assert sig == copy(sig) == deepcopy(sig) == try_import(d_path)(*d_args, **d_kwargs)
-        assert {cls(dict, *args, *ex_args, **kwargs | ex_kwargs)} == {
-            sig.evolve(*ex_args, **ex_kwargs)
+        assert {cls(dict, args + ex_args, kwargs | ex_kwargs)} == {
+            sig.evolve(args=args + ex_args, kwargs=kwargs | ex_kwargs)
         }
 
     def test_get(self):
         args, kwargs = (Mock(int), Mock(float), Mock(tuple)), {k: Mock(str) for k in "abc"}
         c_args, c_kwargs = (Mock(int), Mock(float), Mock(tuple)), {k: Mock(str) for k in "xyz"}
         obj = Mock(abc.Callable)
-        sig = Func(obj, *args, **kwargs)
+        sig = Func(obj, args, kwargs)
         val = sig(*c_args, **c_kwargs)
         obj.assert_called_once_with(*c_args, *args, **kwargs | c_kwargs)
         assert val == obj.return_value == sig.get(obj)

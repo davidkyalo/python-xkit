@@ -175,7 +175,9 @@ class cached_attr(property, t.Generic[_T_Co]):
             with self._lock:
                 val = cache.get(name, NotSet)
                 if val is NotSet:
-                    val = super().__get__(obj, cls)
+                    if not (fget := self.fget):
+                        raise AttributeError(f"{name!r} not set.")
+                    val = fget(obj)
                     try:
                         cache[name] = val
                     except TypeError:
@@ -185,15 +187,15 @@ class cached_attr(property, t.Generic[_T_Co]):
 
     def __set__(self, obj: _T, val: t.Any) -> None:
         with self._lock:
-            if self.fset:
-                return super().__set__(obj, val)
+            if fset := self.fset:
+                return fset(obj, val)
 
             _dictset(self, obj, val)
 
     def __delete__(self, obj: _T) -> None:
         with self._lock:
-            if self.fdel:
-                return super().__delete__(obj)
+            if fdel := self.fdel:
+                return fdel(obj)
 
             _dictpop(self, obj)
 

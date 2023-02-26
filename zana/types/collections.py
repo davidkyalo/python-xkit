@@ -303,3 +303,64 @@ class DefaultDict(dict[_KT, _VT | _FT]):
         if value is _empty:
             value = self._default
         return self.__dict_setdefault(key, value)
+
+
+_tuple_new = tuple.__new__
+
+
+class UserTuple(tuple[_VT]):
+    __slots__ = ()
+
+    __tuple_add__ = tuple.__add__
+    __tuple_mul__ = tuple.__mul__
+    __tuple_rmul__ = tuple.__rmul__
+    __tuple_getitem__ = tuple.__getitem__
+
+    def construct(cls, it):
+        ...
+
+    if t.TYPE_CHECKING:
+        construct: type[Self]
+    else:
+
+        def __new__(cls: type[Self], iterable: abc.Iterable[str] = ()) -> Self:
+            if iterable.__class__ is cls:
+                return iterable
+            return _tuple_new(cls, iterable)
+
+        construct = classmethod(__new__)
+
+    def __str__(self) -> str:
+        return ", ".join(map(repr, self))
+
+    def __repr__(self) -> str:
+        return f"{self.__class__.__name__}({self!s})"
+
+    def __add__(self, o: tuple) -> Self:
+        __tracebackhide__ = True
+        rv = self.__tuple_add__(o)
+        return rv if rv is NotImplemented else self.construct(rv)
+
+    def __mul__(self, o: int) -> Self:
+        __tracebackhide__ = True
+        rv = self.__tuple_mul__(o)
+        return rv if rv is NotImplemented else self.construct(rv)
+
+    def __rmul__(self, o: int) -> Self:
+        __tracebackhide__ = True
+        rv = self.__tuple_rmul__(o)
+        return rv if rv is NotImplemented else self.construct(rv)
+
+    def __getitem__(self, key: int | slice):
+        __tracebackhide__ = True
+        rv = self.__tuple_getitem__(key)
+        return self.construct(rv) if key.__class__ is slice else rv
+
+    def __copy__(self) -> Self:
+        return self
+
+    def __deepcopy__(self, memo) -> Self:
+        return self.construct(deepcopy(o, memo) for o in self)
+
+    def __reduce__(self):
+        return self.__class__.construct, (tuple(self),)

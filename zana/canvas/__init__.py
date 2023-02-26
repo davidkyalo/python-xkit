@@ -4,19 +4,21 @@ import typing as t
 from abc import abstractmethod
 from collections import abc
 from functools import reduce
+from importlib.resources import path
+from itertools import chain
 from logging import getLogger
 from operator import attrgetter
 from types import GenericAlias
 
 import attr
-from typing_extensions import Self as T_Self
+from typing_extensions import Self
 
 from zana.types import Interface
-from zana.types.collections import Atomic, ChainMap, Composite, FrozenDict, Subscriptable
+from zana.types.collections import Atomic, ChainMap, Composite, FrozenDict, Subscriptable, UserTuple
 from zana.util import cached_attr, pipeline
 
 _T = t.TypeVar("_T")
-_RT = t.TypeVar("_RT")
+_T_Co = t.TypeVar("_T_Co", covariant=True)
 
 
 _T_Arg = t.TypeVar("_T_Arg")
@@ -37,16 +39,39 @@ class _notset(t.Protocol):
     pass
 
 
-_define = attr.define
+def _field_transformer(fn=None):
+    def hook(cls: type, fields: list[attr.Attribute]):
+        fields = fn(cls, fields) if fn else fields
+        cls.__positional_attrs__ = {
+            f.alias or f.name: f.name for f in fields if f.init and not f.kw_only
+        }
+        return fields
+
+    return hook
+
+
+_define = attr.s
 
 if not t.TYPE_CHECKING:
 
-    def _define(*a, **kw):
-        return attr.define(*a, **dict(frozen=True, cmp=True, cache_hash=True) | kw)
+    def _define(*a, field_transformer=None, **kw):
+        return attr.define(
+            *a,
+            **dict(
+                frozen=True,
+                # cmp=True,
+                cache_hash=True,
+                # collect_by_mro=True,
+                field_transformer=_field_transformer(field_transformer),
+            )
+            | kw,
+        )
 
 
-def compose(*expressions: "Signature"):
-    return Composition(*expressions)._()
+def compose(*signatures: "Signature"):
+    return Composition(
+        s if isinstance(s, Signature) else Func(s) if callable(s) else Ref(s) for s in signatures
+    )._()
 
 
 def ensure_signature(obj=_notset):
@@ -84,68 +109,69 @@ class Composable(Interface, check=False):
 
 @Atomic.register
 @_define()
-class Signature(t.Generic[_RT, _T, _T_Arg, _T_Kwarg]):
+class Signature(t.Generic[_T_Co]):
     # __slots__ = "__dict__", "__weakref__"
     __class_getitem__ = classmethod(GenericAlias)
+    __positional_attrs__: t.ClassVar[dict[str, str]] = ...
 
     # __args__: t.Final[tuple[_T_Arg, ...]]
     # __kwargs__: t.Final[_T_Kwarg]
 
-    _min_args_: t.Final = 0
-    _max_args_: t.Final = math.inf
-    _default_args_: t.Final = ()
-    _default_kwargs_: t.Final = FrozenDict()
-    _required_kwargs_: t.Final = frozenset[str]()
-    _extra_kwargs_: t.Final = False
-    _allowed_kwargs_: t.Final = frozenset[str]()
-    _allows_merging_: t.Final[bool] = True
-    _merge_types_: t.Final[set[type[T_Self]]]
+    # _min_args_: t.Final = 0
+    # _max_args_: t.Final = math.inf
+    # _default_args_: t.Final = ()
+    # _default_kwargs_: t.Final = FrozenDict()
+    # _required_kwargs_: t.Final = frozenset[str]()
+    # _extra_kwargs_: t.Final = False
+    # _allowed_kwargs_: t.Final = frozenset[str]()
+    # _allows_merging_: t.Final[bool] = True
+    # _merge_types_: t.Final[set[type[Self]]]
 
-    if t.TYPE_CHECKING:
-        __args__ = __kwargs__ = None
+    # if t.TYPE_CHECKING:
+    #     __args__ = __kwargs__ = None
 
-    def __init_subclass__(
-        cls,
-        args=None,
-        kwargs=None,
-        required_kwargs=None,
-        min_args=None,
-        max_args=None,
-        extra_kwargs=None,
-        merge=None,
-        **kwds,
-    ) -> None:
-        super().__init_subclass__(**kwds)
-        if merge is not None:
-            cls._allows_merging_ = not not merge
+    # def __init_subclass__(
+    #     cls,
+    #     args=None,
+    #     kwargs=None,
+    #     required_kwargs=None,
+    #     min_args=None,
+    #     max_args=None,
+    #     extra_kwargs=None,
+    #     merge=None,
+    #     **kwds,
+    # ) -> None:
+    #     super().__init_subclass__(**kwds)
+    #     if merge is not None:
+    #         cls._allows_merging_ = not not merge
 
-        if cls._allows_merging_:
-            cls._merge_types_ = set({cls})
-        else:
-            cls._merge_types_ = frozenset()
+    #     if cls._allows_merging_:
+    #         cls._merge_types_ = set({cls})
+    #     else:
+    #         cls._merge_types_ = frozenset()
 
-        if min_args is not None:
-            cls._min_args_ = min_args
-        if max_args is not None:
-            cls._max_args_ = max_args
+    #     if min_args is not None:
+    #         cls._min_args_ = min_args
+    #     if max_args is not None:
+    #         cls._max_args_ = max_args
 
-        if args is not None:
-            cls._default_args_ = tuple(args.split() if isinstance(args, str) else args)
-        if kwargs is not None:
-            cls._default_kwargs_ = FrozenDict(kwargs)
+    #     if args is not None:
+    #         cls._default_args_ = tuple(args.split() if isinstance(args, str) else args)
+    #     if kwargs is not None:
+    #         cls._default_kwargs_ = FrozenDict(kwargs)
 
-        if required_kwargs is not None:
-            cls._required_kwargs_ = dict.fromkeys(
-                args.split() if isinstance(args, str) else args
-            ).keys()
+    #     if required_kwargs is not None:
+    #         cls._required_kwargs_ = dict.fromkeys(
+    #             args.split() if isinstance(args, str) else args
+    #         ).keys()
 
-        if extra_kwargs is not None:
-            cls._extra_kwargs_ = not not extra_kwargs
+    #     if extra_kwargs is not None:
+    #         cls._extra_kwargs_ = not not extra_kwargs
 
-        if cls._extra_kwargs_:
-            cls._allowed_kwargs_ = cls._default_kwargs_.keys()
-        else:
-            cls._allowed_kwargs_ = {}.keys()
+    #     if cls._extra_kwargs_:
+    #         cls._allowed_kwargs_ = cls._default_kwargs_.keys()
+    #     else:
+    #         cls._allowed_kwargs_ = {}.keys()
 
     # @classmethod
     # def construct(cls, args=(), kwargs=FrozenDict()):
@@ -204,13 +230,40 @@ class Signature(t.Generic[_RT, _T, _T_Arg, _T_Kwarg]):
         return self
 
     def evolve(self, *args, **kwds):
-        return self.__class__(*self.__args__, *args, **self.__kwargs__ | kwds)
+        args = dict(zip(self.__positional_attrs__, args)) if args else _empty_dict
+        return attr.evolve(self, **args, **kwds)
 
-    if not t.TYPE_CHECKING:
-        evolve: type[T_Self]
+    if t.TYPE_CHECKING:
+        evolve: type[Self]
 
-    else:
-        evolve: t.ClassVar = attr.evolve
+    @t.overload
+    def asdict(
+        self,
+        *,
+        recurse: bool = True,
+        filter=None,
+        dict_factory=dict,
+        retain_collection_types: bool = False,
+        value_serializer=None,
+    ):
+        ...
+
+    def asdict(self, **kwds):
+        return attr.asdict(self, **kwds)
+
+    @t.overload
+    def astuple(
+        self,
+        *,
+        recurse: bool = True,
+        filter=None,
+        tuple_factory=tuple,
+        retain_collection_types=False,
+    ):
+        ...
+
+    def astuple(self, **kwds):
+        return attr.astuple(self, **kwds)
 
     # def __repr__(self):
     #     params = map(repr, self.__args__), (f"{k}={v!r}" for k, v in self.__kwargs__.items())
@@ -230,6 +283,7 @@ class Signature(t.Generic[_RT, _T, _T_Arg, _T_Kwarg]):
 
     # def __hash__(self) -> int:
     #     return hash(self.__ident__)
+
     @abstractmethod
     def __add__(self, o: T_OneOrManySignatures):
         return NotImplemented
@@ -240,16 +294,16 @@ class Signature(t.Generic[_RT, _T, _T_Arg, _T_Kwarg]):
 
     def __or__(self, o):
         if isinstance(o, Signature):
-            return compose(self, o)
+            return Composition((self, o))._()
         elif isinstance(o, T_ManySignatures):
-            return compose(self, *o)
+            return Composition(chain((self,), o))._()
         return NotImplemented
 
     def __ror__(self, o):
         if isinstance(o, Signature):
-            return compose(o, self)
+            return Composition((o, self))._()
         elif isinstance(o, T_ManySignatures):
-            return compose(*o, self)
+            return Composition(chain(o, (self,)))._()
         return NotImplemented
 
     # def can_merge(self, o: T_Self):
@@ -264,13 +318,13 @@ class Signature(t.Generic[_RT, _T, _T_Arg, _T_Kwarg]):
     #     return self.construct(self.__args__ + o.__args__, self.__kwargs__ | o.__kwargs__)
 
     @abstractmethod
-    def __call__(self, *a, **kw) -> _RT:
+    def __call__(self, *a, **kw) -> _T_Co:
         raise NotImplementedError(f"{self!r} getter not supported")
 
-    def get(self, obj: _T) -> _RT:
+    def get(self, obj: _T) -> _T_Co:
         return self(obj)
 
-    def set(self, obj: _T, val: _RT):
+    def set(self, obj: _T, val: _T_Co):
         raise NotImplementedError(f"{self!r} setter not supported")
 
     def delete(self, obj: _T):
@@ -278,50 +332,52 @@ class Signature(t.Generic[_RT, _T, _T_Arg, _T_Kwarg]):
 
     def deconstruct(self):
         path = f"{self.__class__.__module__}.{self.__class__.__name__}"
-        args, kwargs = self.__args__, dict(self.__kwargs__)
-        d_args, d_kwargs = self._default_args_, self._default_kwargs_
-        if d_args and len(d_args) == len(args):
-            for i in range(len(d_args)):
-                if args[i:] == d_args[i:]:
-                    args = args[:i]
-                    break
-        for k, v in d_kwargs.items():
-            if k in kwargs and kwargs[k] == v:
-                del kwargs[k]
+        fields: list[attr.Attribute] = attr.fields(self.__class__)
+        args, kwargs = [], {}
 
-        return path, list(args), kwargs
+        for field in fields:
+            if field.init:
+                default, value = field.default, getattr(self, field.name)
+                if not default is attr.NOTHING:
+                    if isinstance(default, attr.Factory):
+                        default = default.factory(*((self,) if default.takes_self else ()))
+                    if value == default:
+                        continue
+                if field.kw_only:
+                    kwargs[field.alias or field.name] = value
+                else:
+                    args.append(value)
+
+        return path, args, kwargs
 
 
 T_OneOrManySignatures = Signature | T_OneOrManySignatures
 
 
 @_define
-class Ref(Signature, t.Generic[_RT]):
-    _object: _RT
+class Ref(Signature[_T_Co]):
+    value: _T_Co
 
-    def __call__(this, /, self=None) -> _RT:
-        return this.__args__[0]
+    def __call__(this, /, self=None) -> _T_Co:
+        return this.value
 
-    def __add__(self, o: T_OneOrManySignatures):
+    def __add__(self, o: object):
         if self.__class__ is o.__class__:
             return o
         return NotImplemented
 
-    def __radd__(self, o: T_OneOrManySignatures):
+    def __radd__(self, o: object):
         if isinstance(o, Signature):
             return self
         return NotImplemented
 
 
 @_define
-class Return(Signature, t.Generic[_RT]):
-    def __new__(cls):
-        return cls.construct()
-
-    def __call__(this, /, self: _RT) -> _RT:
+class Return(Signature[_T_Co]):
+    def __call__(this, /, self: _T_Co) -> _T_Co:
         return self
 
-    def __add__(self, o: T_OneOrManySignatures):
+    def __add__(self, o: object):
         if self.__class__ is o.__class__:
             return o
         return NotImplemented
@@ -332,84 +388,70 @@ class Return(Signature, t.Generic[_RT]):
         return NotImplemented
 
 
-class AttrOptions(t.TypedDict, total=False):
-    default: _T
-
-
-class Attr(Signature[_RT, _T, _T_Attr, AttrOptions], min_args=1, kwargs={"default": _notset}):
+class AttrPath(UserTuple[str]):
     __slots__ = ()
 
-    @t.overload
-    def __new__(cls, name: _T_Attr, *names: _T_Attr, default=...) -> T_Self:
-        ...
+    def __new__(cls: type[Self], path: abc.Iterable[str] = ()) -> Self:
+        if path.__class__ is cls:
+            return path
+        elif isinstance(path, str):
+            it = path.split(".")
+        else:
+            it = (
+                at
+                for it in (path or ())
+                for at in (it.split(".") if isinstance(it, str) else (it,))
+            )
+        return cls.construct(it)
 
-    def __new__(cls, *names: _T_Attr, default=_notset):
-        return cls.construct(
-            tuple(at for a in names for at in (a.split(".") if isinstance(a, str) else (a,))),
-            _empty_dict if default is _notset else FrozenDict(default=default),
-        )
+    def __str__(self) -> str:
+        return ".".join(map(str, self))
 
-    @property
-    def default(self):
-        if "default" in self.__kwargs__:
-            return self.__kwargs__["default"]
-        raise AttributeError("default")
 
-    @property
-    def has_default(self):
-        return "default" in self.__kwargs__
+@_define()
+class Attr(Signature[_T_Co]):
+    path: AttrPath = attr.ib(converter=AttrPath, repr=str)
 
-    def __call__(self, obj) -> _RT:
+    def __str__(self) -> str:
+        return f".{self.path}"
+
+    def __call__(self, obj) -> _T_Co:
         __tracebackhide__ = True
         try:
-            for arg in self.__args__:
-                obj = getattr(obj, arg)
+            for name in self.path:
+                obj = getattr(obj, name)
             return obj
         except AttributeError as e:
-            if self.has_default:
-                return self.default
             raise AttributeSignatureError(self) from e
 
     def set(self, obj, val):
         __tracebackhide__ = True
-        args = self.__args__
+        path = self.path
         try:
-            for arg in args[:-1]:
-                obj = getattr(obj, arg)
-            setattr(obj, args[-1], val)
+            for name in path[:-1]:
+                obj = getattr(obj, name)
+            setattr(obj, path[-1], val)
         except AttributeError as e:
             raise AttributeSignatureError(self) from e
 
     def delete(self, obj):
         __tracebackhide__ = True
-        args = self.__args__
+        path = self.path
         try:
-            for arg in args[:-1]:
-                obj = getattr(obj, arg)
-            delattr(obj, args[-1])
+            for name in path[:-1]:
+                obj = getattr(obj, name)
+            delattr(obj, path[-1])
         except AttributeError as e:
             raise AttributeSignatureError(self) from e
 
-    def __add__(self, o: T_OneOrManySignatures):
-        cls, args, kwargs = self.__class__, self.__args__, self.__kwargs__
-        if not (cls is o.__class__ and kwargs == o.__kwargs__):
-            print(f"ADD ++++ {cls.__name__}: {self} + {o} = NotImplemented")
+    def __add__(self, o: Self):
+        if not self.__class__ is o.__class__:
+            print(f"{self.__class__.__name__}.ADD: {self} + {o} = NotImplemented")
             return NotImplemented
-        lhs, rhs = args, o.__args__
-        items = lhs + rhs
-        print(f"ADD ++++ {cls.__name__}: {self} + {o} = {cls.construct(items)}")
-
-        return cls.construct(items, kwargs.copy())
-
-    def __radd__(self, o: T_OneOrManySignatures):
-        cls, args, kwargs = self.__class__, self.__args__, self.__kwargs__
-        if not (cls is o.__class__ and kwargs == o.__kwargs__):
-            print(f"RADD ++++ {cls.__name__}: {self} + {o} = NotImplemented")
-            return NotImplemented
-        lhs, rhs = o.__args__, args
-        items = lhs + rhs
-        print(f"RADD ++++ {cls.__name__}: {self} + {o} = {cls.construct(items)}")
-        return cls.construct(items, kwargs.copy())
+        lhs, rhs = self.path, o.path
+        path = lhs + rhs
+        print(f"{self.__class__.__name__}.ADD: {self} + {o} = {self.evolve(path)}")
+        return self.evolve(path)
 
 
 _lookup_errors = {
@@ -419,101 +461,60 @@ _lookup_errors = {
 }
 
 
-class Item(
-    Signature[
-        _RT,
-        Subscriptable[_T_Arg, _T],
-        _T_Arg,
-    ],
-    min_args=1,
-    kwargs={"default": _notset},
-):
+class SubscriptPath(UserTuple[_T_Key]):
     __slots__ = ()
 
-    @t.overload
-    def __new__(cls, key: _T_Key, *keys: _T_Key, default=...) -> T_Self:
-        ...
+    def __str__(self) -> str:
+        return f"[{']['.join(map(str, self))}]"
 
-    def __new__(cls, *keys: _T_Attr, default=_notset):
-        return cls.construct(
-            keys,
-            _empty_dict if default is _notset else FrozenDict(default=default),
-        )
 
-    @property
-    def default(self):
-        __tracebackhide__ = True
-        if "default" in self.__kwargs__:
-            return self.__kwargs__["default"]
-        raise AttributeError("default")
+@_define()
+class Subscript(Signature[_T_Co]):
+    path: SubscriptPath = attr.ib(converter=SubscriptPath, repr=str)
 
-    @property
-    def has_default(self):
-        return "default" in self.__kwargs__
+    def __str__(self) -> str:
+        return f"{self.path}"
 
-    def __call__(self, obj) -> _RT:
+    def __call__(self, obj) -> _T_Co:
         __tracebackhide__ = True
         try:
-            for arg in self.__args__:
+            for arg in self.path:
                 obj = obj[arg]
             return obj
         except LookupError as e:
-            if self.has_default:
-                return self.default
-            raise _lookup_errors.get(
-                e.__class__,
-            )(self) from e
+            raise _lookup_errors.get(e.__class__)(self) from e
 
     def set(self, obj, val):
         __tracebackhide__ = True
-        args = self.__args__
+        args = self.path
         try:
             for arg in args[:-1]:
                 obj = obj[arg]
             obj[args[-1]] = val
         except LookupError as e:
-            raise (
-                KeySignatureError
-                if isinstance(e, KeyError)
-                else IndexSignatureError
-                if isinstance(e, IndexError)
-                else LookupSignatureError
-            )(self) from e
+            raise _lookup_errors.get(e.__class__)(self) from e
 
     def delete(self, obj):
         __tracebackhide__ = True
-        args = self.__args__
+        args = self.path
         try:
             for arg in args[:-1]:
                 obj = obj[arg]
             del obj[args[-1]]
         except LookupError as e:
-            raise (
-                KeySignatureError
-                if isinstance(e, KeyError)
-                else IndexSignatureError
-                if isinstance(e, IndexError)
-                else LookupSignatureError
-            )(self) from e
+            raise _lookup_errors.get(e.__class__)(self) from e
 
-    def __add__(self, o: T_OneOrManySignatures):
-        cls, args, kwargs = self.__class__, self.__args__, self.__kwargs__
-        if not (cls is o.__class__ and kwargs == o.__kwargs__):
+    def __add__(self, o: Self):
+        if not self.__class__ is o.__class__:
+            print(f"{self.__class__.__name__}.ADD: {self} + {o} = NotImplemented")
             return NotImplemented
-        lhs, rhs = args, o.__args__
-        items = lhs + rhs
-        return cls.construct(items, kwargs.copy())
-
-    def __radd__(self, o: T_OneOrManySignatures):
-        cls, args, kwargs = self.__class__, self.__args__, self.__kwargs__
-        if not (cls is o.__class__ and kwargs == o.__kwargs__):
-            return NotImplemented
-        lhs, rhs = o.__args__, args
-        items = lhs + rhs
-        return cls.construct(items, kwargs.copy())
+        lhs, rhs = self.path, o.path
+        path = lhs + rhs
+        print(f"{self.__class__.__name__}.ADD: {self} + {o} = {self.evolve(path)}")
+        return self.evolve(path)
 
 
-_slice_to_tuple = attrgetter("start", "stop", "step")
+_slice_tuple = attrgetter("start", "stop", "step")
 
 
 def _to_slice(val):
@@ -526,68 +527,194 @@ def _to_slice(val):
         return slice(*val)
 
 
-class Slice(Item[_RT, slice], min_args=1):
+class SlicePath(UserTuple[slice]):
     __slots__ = ()
 
-    @t.overload
-    def __new__(
-        cls, key: slice | tuple[int, int, int], *keys: slice | tuple[int, int, int], default=...
-    ) -> T_Self:
-        ...
+    def __new__(cls: type[Self], path: abc.Iterable[str] = ()) -> Self:
+        if path.__class__ is cls:
+            return path
+        return cls.construct(map(_to_slice, path))
 
-    def __new__(cls, *keys: slice | tuple[int, int, int], default=_notset):
-        return cls.construct(
-            tuple(map(_to_slice, keys)),
-            _empty_dict if default is _notset else FrozenDict(default=default),
-        )
+    def __str__(self) -> str:
+        return "".join(f"[{s.start}:{s.stop}:{s.step}]".replace("None", "") for s in self)
 
-    # @classmethod
-    # def _parse_params_(cls, args, kwargs):
-    #     __tracebackhide__ = True
-    #     args, kwargs = super()._parse_params_(map(_to_slice, args), kwargs)
-    #     if kwargs != cls._default_kwargs_:
-    #         names, s = list(map(repr, kwargs)), "s" if len(kwargs) > 1 else ""
-    #         names = " and ".join(filter(None, (", ".join(names[:-1]), names[-1])))
-    #         raise TypeError(f"{cls.__name__} got unexpected keyword argument{s} {names}")
-    #     return args, kwargs
 
-    def __hash__(self) -> int:
-        return hash(tuple(map(_slice_to_tuple, self.__args__)))
+@_define()
+class Slice(Subscript[_T_Co]):
+    path: SlicePath = attr.ib(converter=SlicePath, repr=str, cmp=False)
+    raw_path: tuple[tuple[_T_Key, _T_Key, _T_Key]] = attr.ib(init=False, repr=False, cmp=True)
+
+    @raw_path.default
+    def _init_raw_path(self):
+        return tuple(map(_slice_tuple, self.path))
 
     def deconstruct(self):
         path, args, kwargs = super().deconstruct()
-        args = [_slice_to_tuple(s) for s in args]
-        return path, args, kwargs
+        return path, [self.raw_path], {}
 
 
-class Call(Signature, merge=False):
-    __slots__ = ()
+@_define()
+class Call(Signature[_T_Co]):
+    args: tuple[t.Any] = attr.ib(default=(), converter=tuple)
+    kwargs: FrozenDict[str, t.Any] = attr.ib(default=FrozenDict(), converter=FrozenDict)
 
-    def __new__(cls: type[T_Self], /, *args, **kwargs) -> T_Self:
-        return cls.construct(args, FrozenDict(kwargs))
+    def __str__(self) -> str:
+        params = map(repr, self.args), (f"{k}={v!r}" for k, v in self.kwargs.items())
+        return f"({', '.join(p for ps in params for p in ps)})"
 
-    def __call__(self, obj, /, *a, **kw):
-        args, kwargs = self.__args__, self.__kwargs__
-        return obj(*a, *args, **kwargs | kw)
+    # def __repr__(self):
+    #     params = map(repr, self.__args__), (f"{k}={v!r}" for k, v in self.__kwargs__.items())
+    #     return f"{self.__class__.__name__}({', '.join(p for ps in params for p in ps)})"
+
+    def __call__(this, /, self, *a, **kw) -> _T_Co:
+        return self(*a, *this.args, **this.kwargs | kw)
 
 
-class Func(Signature[_RT, _T_Fn], min_args=1, merge=False):
-    __slots__ = ()
+@_define()
+class Func(Signature[_T_Co]):
+    func: abc.Callable = attr.ib()
+    args: tuple[t.Any] = attr.ib(default=(), converter=tuple)
+    kwargs: FrozenDict[str, t.Any] = attr.ib(default=FrozenDict(), converter=FrozenDict)
 
     @property
     def __wrapped__(self):
-        return self.__args__[0]
+        return self.func
 
-    @t.overload
-    def __new__(cls: type[T_Self], func: abc.Callable, /, *args, **kwargs) -> T_Self:
-        ...
-
-    def __new__(cls: type[T_Self], /, *args, **kwargs) -> T_Self:
-        return cls.construct(args, FrozenDict(kwargs))
+    def __str__(self) -> str:
+        params = map(repr, self.args), (f"{k}={v!r}" for k, v in self.kwargs.items())
+        return f"{self.func.__name__}({', '.join(p for ps in params for p in ps)})"
 
     def __call__(self, /, *a, **kw):
-        args, kwargs = self.__args__, self.__kwargs__
-        return args[0](*a, *args[1:], **kwargs | kw)
+        return self.func(*a, *self.args, **self.kwargs | kw)
+
+
+def _join(a: list[Signature], b: Signature):
+    if not a:
+        return [b]
+    try:
+        a[-1] = a[-1] + b
+    except TypeError:
+        a.append(b)
+    return a
+
+
+def _reduce(items: T_ManySignatures):
+    return tuple(
+        i for it in reduce(_join, items, []) for i in (it if isinstance(it, Composite) else (it,))
+    )
+
+
+class CompositionPath(UserTuple[Signature]):
+    __slots__ = ()
+
+    def __new__(cls: type[Self], path: abc.Iterable[str] = ()) -> Self:
+        if path.__class__ is cls:
+            return path
+        return cls.construct(
+            i
+            for it in reduce(_join, path, [])
+            for i in (it if isinstance(it, Composite) else (it,))
+        )
+
+    def __str__(self) -> str:
+        return "".join(map(str, self))
+
+
+@_define()
+class Composition(Signature, abc.Sequence[Signature]):
+    path: CompositionPath = attr.ib(default=(), converter=CompositionPath)
+
+    def __call__(this, /, self=_notset, *a, **kw) -> abc.Callable[[t.Any], _T]:
+        path, pre = this.path, () if self is _notset else (self,)
+        for i in range(len(path) - 1):
+            pre = (path[i](*pre),)
+        return path[-1](*pre, *a, **kw)
+
+    def set(this, /, self, val) -> abc.Callable[[t.Any], _T]:
+        path = this.path
+        for i in range(len(path) - 1):
+            self = path[i](self)
+        return path[-1].set(self, val)
+
+    def delete(this, /, self) -> abc.Callable[[t.Any], _T]:
+        path = this.path
+        for i in range(len(path) - 1):
+            self = path[i](self)
+        return path[-1].delete(self)
+
+    def _(self):
+        return self.path[0]._() if len(self) == 1 else self
+
+    def __str__(self) -> str:
+        return " | ".join(map(repr, self))
+
+    def __len__(self):
+        return len(self.path)
+
+    def __contains__(self, x):
+        return x in self.path
+
+    @t.overload
+    def __getitem__(self, key: int) -> Signature:
+        ...
+
+    @t.overload
+    def __getitem__(self, key: slice) -> Self:
+        ...
+
+    def __getitem__(self, key):
+        val = self.path[key]
+        if isinstance(key, slice):
+            val = self.evolve(val)
+        return val
+
+    def __iter__(self):
+        return iter(self.path)
+
+    def __reversed__(self):
+        return reversed(self.path)
+
+    def __add__(self, o: T_OneOrManySignatures):
+        if not isinstance(o, Signature):
+            return NotImplemented
+
+        if isinstance(o, Composition):
+            lhs, rhs = self.path, o.path
+        else:
+            lhs, rhs = self.path, (o,)
+
+        if lhs and rhs:
+            path = lhs[:-1] + (*_join([lhs[-1]], rhs[0]),) + rhs[1:]
+        else:
+            path = lhs or rhs
+
+        return self.evolve(path)._()
+
+    def __radd__(self, o: T_OneOrManySignatures):
+        if not isinstance(o, Signature):
+            return NotImplemented
+
+        if isinstance(o, Composition):
+            lhs, rhs = o.path, self.path
+        else:
+            lhs, rhs = (o,), self.path
+
+        if lhs and rhs:
+            path = lhs[:-1] + (*_join([lhs[-1]], rhs[0]),) + rhs[1:]
+        else:
+            path = lhs or rhs
+
+        return self.evolve(path)._()
+
+    def __or__(self, o):
+        if isinstance(o, Signature):
+            return self.__add__(o)
+        return super().__or__(o)
+
+    def __ror__(self, o):
+        if isinstance(o, Signature):
+            return self.__radd__(o)
+        return super().__ror__(o)
 
 
 _builtin_operators = {
@@ -659,16 +786,16 @@ class _OperatorDict(ChainMap):
 ALL_OPERATORS = _OperatorDict(_builtin_operators, _user_operators)
 
 
-class Operation(Signature[_RT, _T, Signature, OperationOptions]):
+class Operation(Signature[_T_Co, _T, Signature, OperationOptions]):
     __slots__ = ()
 
     @t.overload
     def __new__(
-        cls: type[T_Self], operant: Signature, *operants: Signature, operator: str | t.Callable
-    ) -> T_Self:
+        cls: type[Self], operant: Signature, *operants: Signature, operator: str | t.Callable
+    ) -> Self:
         ...
 
-    def __new__(cls: type[T_Self], *operants: Signature, operator: str | t.Callable) -> T_Self:
+    def __new__(cls: type[Self], *operants: Signature, operator: str | t.Callable) -> Self:
         return cls.construct(
             tuple(map(ensure_signature, operants)), FrozenDict(operator=ALL_OPERATORS[operator])
         )
@@ -693,130 +820,8 @@ class Operation(Signature[_RT, _T, Signature, OperationOptions]):
         return this.operator(*(o(self) for o in this.__args__))
 
 
-class ChainOptions(t.TypedDict, total=False):
-    args: tuple
-    kwargs: FrozenDict
-    tap: int | tuple[int, int, int]
-
-
-def _join(a: list[Signature], b: Signature):
-    if not a:
-        return [b]
-    try:
-        a[-1] = a[-1] + b
-    except TypeError:
-        a.append(b)
-    return a
-
-
-def _reduce(items: T_ManySignatures):
-    return tuple(
-        i for it in reduce(_join, items, []) for i in (it if isinstance(it, Composite) else (it,))
-    )
-
-
-@Composite.register
-class Composition(Signature, abc.Sequence[Signature]):
-    __slots__ = ()
-
-    @t.overload
-    def __new__(cls: type[T_Self], item: abc.Callable, /, *items: abc.Callable) -> T_Self:
-        ...
-
-    def __new__(cls: type[T_Self], /, *items: abc.Callable) -> T_Self:
-        return cls.construct(_reduce(items))
-
-    @cached_attr
-    def __call__(self) -> abc.Callable[[t.Any], _T]:
-        return pipeline(self.__args__, tap=-1)
-
-    @cached_attr
-    def set(self):
-        func = pipeline(self.__args__[:-1] + (self.__args__[-1].set,), tap=-1)
-        return func
-
-    @cached_attr
-    def delete(self):
-        func = pipeline(self.__args__[:-1] + (self.__args__[-1].delete,), tap=-1)
-        return func
-
-    def _(self):
-        return self.__args__[0]._() if len(self) == 1 else self
-
-    def __str__(self) -> str:
-        return " | ".join(map(repr, self))
-
-    def __len__(self):
-        return len(self.__args__)
-
-    def __contains__(self, x):
-        return x in self.__args__
-
-    @t.overload
-    def __getitem__(self, key: int) -> Signature:
-        ...
-
-    @t.overload
-    def __getitem__(self, key: slice) -> T_Self:
-        ...
-
-    def __getitem__(self, key):
-        val = self.__args__[key]
-        if isinstance(key, slice):
-            val = self.construct(val)
-        return val
-
-    def __iter__(self):
-        return iter(self.__args__)
-
-    def __reversed__(self):
-        return reversed(self.__args__)
-
-    def __add__(self, o: T_OneOrManySignatures):
-        if not isinstance(o, Signature):
-            return NotImplemented
-
-        if isinstance(o, Composition):
-            lhs, rhs = self.__args__, o.__args__
-        else:
-            lhs, rhs = self.__args__, (o,)
-
-        if lhs and rhs:
-            items = lhs[:-1] + (*_join([lhs[-1]], rhs[0]),) + rhs[1:]
-        else:
-            items = lhs or rhs
-
-        return self.construct(items)
-
-    def __radd__(self, o: T_OneOrManySignatures):
-        if not isinstance(o, Signature):
-            return NotImplemented
-
-        if isinstance(o, Composition):
-            lhs, rhs = o.__args__, self.__args__
-        else:
-            lhs, rhs = (o,), self.__args__
-
-        if lhs and rhs:
-            items = lhs[:-1] + (*_join([lhs[-1]], rhs[0]),) + rhs[1:]
-        else:
-            items = lhs or rhs
-
-        return self.construct(items)
-
-    def __or__(self, o):
-        if isinstance(o, Signature):
-            return (self + o)._()
-        return super().__or__(o)
-
-    def __ror__(self, o):
-        if isinstance(o, Signature):
-            return (o + self)._()
-        return super().__ror__(o)
-
-
-class SupportsSignature(t.Protocol[_RT]):
-    def _(self) -> Signature[_RT]:
+class SupportsSignature(t.Protocol[_T_Co]):
+    def _(self) -> Signature[_T_Co]:
         ...
 
 
@@ -828,9 +833,9 @@ def _var_operator_method(nm, op):
     return method
 
 
-class Var(t.Generic[_T, _RT]):
+class Var(t.Generic[_T, _T_Co]):
     __slots__ = ("_Var__signature",)
-    __signature: Signature[_RT]
+    __signature: Signature[_T_Co]
 
     __class_getitem__ = classmethod(GenericAlias)
 
@@ -839,8 +844,8 @@ class Var(t.Generic[_T, _RT]):
     del nm, op
 
     def __new__(
-        cls: type[T_Self], sig: Signature[_RT] = Composition()
-    ) -> _T | SupportsSignature[_RT]:
+        cls: type[Self], sig: Signature[_T_Co] = Composition()
+    ) -> _T | SupportsSignature[_T_Co]:
         self = _object_new(cls)
         object.__setattr__(self, "_Var__signature", sig)
         return self
@@ -855,7 +860,7 @@ class Var(t.Generic[_T, _RT]):
         return self.__extend__(Attr(name))
 
     def __getitem__(self, key):
-        cls = Slice if isinstance(key, slice) else Item
+        cls = Slice if isinstance(key, slice) else Subscript
         return self.__extend__(cls(key))
 
     def __call__(self, /, *args, **kwargs):
