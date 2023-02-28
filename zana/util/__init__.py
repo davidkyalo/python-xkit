@@ -24,6 +24,11 @@ _T_Co = t.TypeVar("_T_Co", covariant=True)
 _P = ParamSpec("_P")
 
 
+def idenity(self: _T_Co = None, /, *a, **kw) -> _T_Co:
+    """Returns the first positional argument."""
+    return self
+
+
 class descriptor(property, t.Generic[_T_Co]):
     attrname = None
 
@@ -166,15 +171,15 @@ class cached_attr(property, t.Generic[_T_Co]):
             return self
         name = self.attrname
         try:
-            cache = obj.__dict__
+            return obj.__dict__[name]
         except AttributeError:
             raise self._dict_not_set_error(obj) from None
-
-        val = cache.get(name, NotSet)
-        if val is NotSet:
+        except KeyError:
+            cache = obj.__dict__
             with self._lock:
-                val = cache.get(name, NotSet)
-                if val is NotSet:
+                if name in cache:
+                    return cache[name]
+                else:
                     if not (fget := self.fget):
                         raise AttributeError(f"{name!r} not set.")
                     val = fget(obj)
@@ -182,8 +187,7 @@ class cached_attr(property, t.Generic[_T_Co]):
                         cache[name] = val
                     except TypeError:
                         raise self._dict_not_mutable_error(obj) from None
-
-        return val
+                    return val
 
     def __set__(self, obj: _T, val: t.Any) -> None:
         with self._lock:

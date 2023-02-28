@@ -127,6 +127,49 @@ Compound.register(abc.Mapping)
 # Compound.register(abc.Generator)
 
 
+class UserDict(dict[_KT, _VT]):
+    """ """
+
+    __slots__ = ()
+
+    _vars_ = {*vars(), "_vars_"}
+
+    __dict_or__ = dict.__or__
+    __dict_ror__ = dict.__ror__
+
+    def __repr__(self) -> str:
+        return f"<{self.__class__.__name__}: {super().__repr__()}>"
+
+    def __or__(self, x):
+        return self.__class__(self.__dict_or__(x))
+
+    def __ror__(self, x):
+        rv = self.__dict_ror__(x)
+        return self.__class__(rv)
+
+    def copy(self):
+        return self.__class__(self)
+
+    __copy__ = copy
+
+    def __reduce__(self):
+        return self.__class__, (dict(self),)
+
+    _vars_ = _vars_ ^ {*vars()}
+    __local_vars = tuple(_vars_)
+    del _vars_
+
+    @classmethod
+    def define_subclass(self: type[Self], cls):
+        if not issubclass(cls, self):
+            assert issubclass(cls, dict)
+            for name in self.__local_vars:
+                if not hasattr(cls, name) or getattr(cls, name) is getattr(dict, name, _empty):
+                    setattr(cls, name, getattr(self, name))
+
+        return cls
+
+
 class ReadonlyMapping(abc.Mapping[_KT, _VT]):
     """A readonly `dict` subclass.
 
@@ -305,6 +348,26 @@ class DefaultDict(dict[_KT, _VT | _FT]):
         return self.__dict_setdefault(key, value)
 
 
+@UserDict.define_subclass
+class DefaultKeyDict(dict[_KT, _VT]):
+    """A dict that returns the `key` on attempts to retrieve a missing item.
+    Example:
+        d = DefaultKeyDict(abc=123)
+        assert d["abc"] == 123 and d["xyz"] == "xyz" and d[234] == 234
+    """
+
+    __slots__ = ()
+    __dict_setdefault__ = dict.setdefault
+
+    def __missing__(self, key):
+        return key
+
+    def setdefault(self, key: _KT, value: _VT = _empty):
+        if value is _empty:
+            value = key
+        return self.__dict_setdefault__(key, value)
+
+
 _tuple_new = tuple.__new__
 
 
@@ -315,6 +378,17 @@ class UserTuple(tuple[_VT]):
     __tuple_mul__ = tuple.__mul__
     __tuple_rmul__ = tuple.__rmul__
     __tuple_getitem__ = tuple.__getitem__
+    __tuple_prototype__ = tuple
+
+    def __init_subclass__(cls) -> None:
+        if "__constructor_class__" not in cls.__dict__:
+            for b in cls.__mro__:
+                if b is UserTuple:
+                    break
+                if any(n in b.__dict__ for n in ("__new__", "__init__", "construct")):
+                    cls.__tuple_prototype__ = b
+                    break
+        print(f"{cls.__name__} >> {cls.__tuple_prototype__=}")
 
     def construct(cls, it):
         ...
@@ -338,8 +412,17 @@ class UserTuple(tuple[_VT]):
 
     def __add__(self, o: tuple) -> Self:
         __tracebackhide__ = True
+        if not isinstance(o, self.__tuple_prototype__) and isinstance(o, tuple):
+            o = self.__class__(o)
+
         rv = self.__tuple_add__(o)
         return rv if rv is NotImplemented else self.construct(rv)
+
+    def __radd__(self, o: tuple) -> Self:
+        __tracebackhide__ = True
+        if isinstance(o, tuple):
+            return self.__class__(o) + self
+        return NotImplemented
 
     def __mul__(self, o: int) -> Self:
         __tracebackhide__ = True
