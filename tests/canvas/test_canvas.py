@@ -12,11 +12,11 @@ from zana.canvas import (
     Attr,
     AttributeSignatureError,
     Call,
+    Callback,
     Composition,
-    Func,
     IndexSignatureError,
     KeySignatureError,
-    Signature,
+    Operation,
     Slice,
     Subscript,
 )
@@ -27,21 +27,21 @@ from zana.util import try_import
 class test_Signature:
     @pyt.mark.skip("THINGS CHANGE")
     def test_config(self):
-        assert Signature._allows_merging_ is True
-        assert Signature._min_args_ == 0
-        assert Signature._max_args_ == math.inf
-        assert Signature._default_args_ == ()
-        assert Signature._default_kwargs_ == {}
+        assert Operation._allows_merging_ is True
+        assert Operation._min_args_ == 0
+        assert Operation._max_args_ == math.inf
+        assert Operation._default_args_ == ()
+        assert Operation._default_kwargs_ == {}
 
-        class Plain(Signature):
+        class Plain(Operation):
             pass
 
-        assert Plain._allows_merging_ == Signature._allows_merging_
-        assert Plain._min_args_ == Signature._min_args_
-        assert Plain._max_args_ == Signature._max_args_
-        assert Plain._default_args_ == Signature._default_args_
-        assert Plain._default_kwargs_ == Signature._default_kwargs_
-        assert Plain._required_kwargs_ == Signature._required_kwargs_
+        assert Plain._allows_merging_ == Operation._allows_merging_
+        assert Plain._min_args_ == Operation._min_args_
+        assert Plain._max_args_ == Operation._max_args_
+        assert Plain._default_args_ == Operation._default_args_
+        assert Plain._default_kwargs_ == Operation._default_kwargs_
+        assert Plain._required_kwargs_ == Operation._required_kwargs_
 
         kwds = {
             "merge": False,
@@ -52,7 +52,7 @@ class test_Signature:
             "required_kwargs": ("z",),
         }
 
-        class Sub(Signature, **kwds):
+        class Sub(Operation, **kwds):
             pass
 
         assert Sub._allows_merging_ == kwds["merge"]
@@ -77,7 +77,7 @@ class test_Signature:
         args, kwargs = tuple(Mock() for i in range(3)), {k: Mock() for k in "abc"}
         args_2 = tuple(Mock() for i in range(2))
 
-        class Foo(Signature):
+        class Foo(Operation):
             pass
 
         class Bar(Foo):
@@ -276,11 +276,11 @@ class test_Slice:
         assert obj == [w, z]
 
 
-class test_Chain:
+class test_Composition:
     def test_basic(self):
         cls, ex, args, flat_args = (
             Composition,
-            Signature(),
+            Call(),
             (Subscript([0, 3]), Slice([(None, None, -1)]), Attr(["abc", "xyz"])),
             (
                 Subscript([0]),
@@ -292,7 +292,7 @@ class test_Chain:
         )
         sig = cls(args)
 
-        print(str(sig), repr(sig))
+        print(str(sig), "<--->", repr(sig))
         assert isinstance(sig, cls)
 
         d_path, d_args, d_kwargs = sig.deconstruct()
@@ -307,12 +307,18 @@ class test_Chain:
         )
         assert all(a in sig for a in args)
 
-        assert {cls(chain(args, [ex]))} == {
+        set_ex = {cls(chain(args, [ex]))}
+        set_rv = {
             sig.evolve(sig.path + (ex,)),
+            sig | ex,
+            (ex | sig[::-1])[::-1],
             sig | cls([ex]),
             sig | [cls([ex])],
             iter(sig) | cls([ex]),
+            (cls([ex]) + sig[::-1])[::-1],
+            sig + cls([ex]),
         }
+        assert set_ex == set_rv
 
     def test_get_set_delete(self):
         w, x, y, z = Mock(), Mock(), Mock(), Mock()
@@ -356,9 +362,8 @@ class test_Call:
         c_args, c_kwargs = (Mock(int), Mock(float), Mock(tuple)), {k: Mock(str) for k in "xyz"}
         obj = Mock(abc.Callable)
         sig = Call(args, kwargs)
-        # assert (sig.args, sig.kwargs) == (args, kwargs)
         val = sig(obj, *c_args, **c_kwargs)
-        obj.assert_called_once_with(*c_args, *args, **kwargs | c_kwargs)
+        obj.assert_called_once_with(*args, *c_args, **kwargs | c_kwargs)
         assert val == obj.return_value == sig.get(obj)
 
     def test_set_delete(self):
@@ -369,7 +374,7 @@ class test_Call:
 
 class test_Func:
     def test_basic(self):
-        cls, args, kwargs = Func, (1, 2, 3), dict(zip("xyz", "XYZ"))
+        cls, args, kwargs = Callback, (1, 2, 3), dict(zip("xyz", "XYZ"))
         ex_args, ex_kwargs = (Mock(int), Mock(float), Mock(tuple)), {k: Mock(str) for k in "zab"}
         sig = cls(dict, args, kwargs)
 
@@ -388,12 +393,12 @@ class test_Func:
         args, kwargs = (Mock(int), Mock(float), Mock(tuple)), {k: Mock(str) for k in "abc"}
         c_args, c_kwargs = (Mock(int), Mock(float), Mock(tuple)), {k: Mock(str) for k in "xyz"}
         obj = Mock(abc.Callable)
-        sig = Func(obj, args, kwargs)
+        sig = Callback(obj, args, kwargs)
         val = sig(*c_args, **c_kwargs)
-        obj.assert_called_once_with(*c_args, *args, **kwargs | c_kwargs)
+        obj.assert_called_once_with(*args, *c_args, **kwargs | c_kwargs)
         assert val == obj.return_value == sig.get(obj)
 
     def test_set_delete(self):
-        sig, obj = Func(Mock()), Mock()
+        sig, obj = Callback(Mock()), Mock()
         pyt.raises(NotImplementedError, lambda: sig.set(obj, Mock()))
         pyt.raises(NotImplementedError, lambda: sig.delete(obj))

@@ -1,21 +1,30 @@
-import math
+import builtins
+import keyword
 import operator
 import typing as t
+import weakref
 from abc import abstractmethod
 from collections import abc
-from functools import reduce
-from importlib.resources import path
+from functools import reduce, singledispatch, singledispatchmethod
 from itertools import chain
 from logging import getLogger
-from operator import attrgetter
+from operator import attrgetter, methodcaller
 from types import GenericAlias
 
 import attr
 from typing_extensions import Self
 
 from zana.types import Interface
-from zana.types.collections import Atomic, ChainMap, Composite, FrozenDict, Subscriptable, UserTuple
-from zana.util import cached_attr, pipeline
+from zana.types.collections import (
+    Atomic,
+    ChainMap,
+    Composite,
+    DefaultKeyDict,
+    FrozenDict,
+    UserTuple,
+)
+from zana.types.enums import IntEnum
+from zana.util import cached_attr
 
 _T = t.TypeVar("_T")
 _T_Co = t.TypeVar("_T_Co", covariant=True)
@@ -27,12 +36,12 @@ _T_Key = t.TypeVar("_T_Key", slice, int, str, t.SupportsIndex, abc.Hashable)
 _T_Fn = t.TypeVar("_T_Fn", bound=abc.Callable)
 _T_Attr = t.TypeVar("_T_Attr", bound=str)
 
-T_ManySignatures = list | tuple | abc.Sequence | abc.Iterator
-T_OneOrManySignatures = T_ManySignatures
 
 logger = getLogger(__name__)
 _object_new = object.__new__
 _empty_dict = FrozenDict()
+
+_repr_str = attr.converters.pipe(str, repr)
 
 
 class _notset(t.Protocol):
@@ -43,7 +52,7 @@ def _field_transformer(fn=None):
     def hook(cls: type, fields: list[attr.Attribute]):
         fields = fn(cls, fields) if fn else fields
         cls.__positional_attrs__ = {
-            f.alias or f.name: f.name for f in fields if f.init and not f.kw_only
+            f.alias or f.name.lstrip("_"): f.name for f in fields if f.init and not f.kw_only
         }
         return fields
 
@@ -54,31 +63,30 @@ _define = attr.s
 
 if not t.TYPE_CHECKING:
 
-    def _define(*a, field_transformer=None, **kw):
+    def _define(*a, no_init=None, field_transformer=None, **kw):
         return attr.define(
             *a,
             **dict(
                 frozen=True,
-                # cmp=True,
+                init=not no_init,
                 cache_hash=True,
-                # collect_by_mro=True,
                 field_transformer=_field_transformer(field_transformer),
             )
             | kw,
         )
 
 
-def compose(*signatures: "Signature"):
-    return Composition(
-        s if isinstance(s, Signature) else Func(s) if callable(s) else Ref(s) for s in signatures
-    )._()
+def compose(*signatures: "Operation"):
+    return +Composition(map(coerce_signature, signatures))
 
 
-def ensure_signature(obj=_notset):
-    if isinstance(obj, Signature):
+def coerce_signature(obj=_notset):
+    if isinstance(obj, Operation):
         return obj
     elif obj is _notset:
-        return Return()
+        return Identity()
+    elif callable(obj):
+        return Callback(obj)
     else:
         return Ref(obj)
 
@@ -103,232 +111,74 @@ class IndexSignatureError(LookupSignatureError, IndexError):
     ...
 
 
-class Composable(Interface, check=False):
+class TrapLike(Interface, t.Generic[_T_Co], check=False):
     __slots__ = ()
 
+    @abstractmethod
+    def __compose__(self) -> "Operation[_T_Co]":
+        ...
 
-@Atomic.register
-@_define()
-class Signature(t.Generic[_T_Co]):
-    # __slots__ = "__dict__", "__weakref__"
+
+@TrapLike.register
+class Operation(t.Generic[_T_Co]):
     __class_getitem__ = classmethod(GenericAlias)
     __positional_attrs__: t.ClassVar[dict[str, str]] = ...
 
-    # __args__: t.Final[tuple[_T_Arg, ...]]
-    # __kwargs__: t.Final[_T_Kwarg]
+    name: str = attr.ib(converter=str)
 
-    # _min_args_: t.Final = 0
-    # _max_args_: t.Final = math.inf
-    # _default_args_: t.Final = ()
-    # _default_kwargs_: t.Final = FrozenDict()
-    # _required_kwargs_: t.Final = frozenset[str]()
-    # _extra_kwargs_: t.Final = False
-    # _allowed_kwargs_: t.Final = frozenset[str]()
-    # _allows_merging_: t.Final[bool] = True
-    # _merge_types_: t.Final[set[type[Self]]]
+    @cached_attr
+    def config(self):
+        return operators[self.name]
 
-    # if t.TYPE_CHECKING:
-    #     __args__ = __kwargs__ = None
+    @cached_attr
+    def operator(self):
+        return self.config.function
 
-    # def __init_subclass__(
-    #     cls,
-    #     args=None,
-    #     kwargs=None,
-    #     required_kwargs=None,
-    #     min_args=None,
-    #     max_args=None,
-    #     extra_kwargs=None,
-    #     merge=None,
-    #     **kwds,
-    # ) -> None:
-    #     super().__init_subclass__(**kwds)
-    #     if merge is not None:
-    #         cls._allows_merging_ = not not merge
+    def __pos__(self):
+        return self
 
-    #     if cls._allows_merging_:
-    #         cls._merge_types_ = set({cls})
-    #     else:
-    #         cls._merge_types_ = frozenset()
-
-    #     if min_args is not None:
-    #         cls._min_args_ = min_args
-    #     if max_args is not None:
-    #         cls._max_args_ = max_args
-
-    #     if args is not None:
-    #         cls._default_args_ = tuple(args.split() if isinstance(args, str) else args)
-    #     if kwargs is not None:
-    #         cls._default_kwargs_ = FrozenDict(kwargs)
-
-    #     if required_kwargs is not None:
-    #         cls._required_kwargs_ = dict.fromkeys(
-    #             args.split() if isinstance(args, str) else args
-    #         ).keys()
-
-    #     if extra_kwargs is not None:
-    #         cls._extra_kwargs_ = not not extra_kwargs
-
-    #     if cls._extra_kwargs_:
-    #         cls._allowed_kwargs_ = cls._default_kwargs_.keys()
-    #     else:
-    #         cls._allowed_kwargs_ = {}.keys()
-
-    # @classmethod
-    # def construct(cls, args=(), kwargs=FrozenDict()):
-    #     self: cls = _object_new(cls)
-    #     self.__args__, self.__kwargs__ = args, kwargs
-    #     return self
-
-    # @classmethod
-    # def construct(cls, attrs=()):
-    #     self: cls = _object_new(cls)
-    #     attrs and self.__dict__.update(attrs)
-    #     return self
-
-    # @classmethod
-    # def _parse_params_(cls, args, kwargs) -> tuple[tuple[_T_Arg, ...], FrozenDict[str, _T_Kwarg]]:
-    #     args, kwargs = tuple(args), FrozenDict(kwargs)
-
-    # def __new__(cls: type[T_Self], *args, **kwargs) -> T_Self:
-    #     args, kwargs = tuple(args), FrozenDict(kwargs)
-
-    #     # if not (cls._min_args_ <= len(args) <= cls._max_args_):
-    #     #     raise TypeError(
-    #     #         f"{cls.__name__} expected "
-    #     #         f"{' to '.join(map(str, {cls._min_args_, cls._max_args_}))}"
-    #     #         f" arguments but got {len(args)}."
-    #     #     )
-    #     # elif d_args := cls._default_args_:
-    #     #     args = args + d_args[len(args) :]
-
-    #     # kw_keys = kwargs.keys()
-    #     # if missed := cls._required_kwargs_ - kw_keys:
-    #     #     missed, s = list(map(repr, missed)), "s" if len(missed) > 1 else ""
-    #     #     raise TypeError(
-    #     #         f"{cls.__name__} is missing required keyword only argument{s} "
-    #     #         f"{' and '.join(filter(None, (', '.join(missed[:-1]), missed[-1])))}."
-    #     #     )
-    #     # elif extra := cls._extra_kwargs_ is False and kw_keys - cls._allowed_kwargs_:
-    #     #     extra, s = list(map(repr, extra)), "s" if len(missed) > 1 else ""
-    #     #     allowed = list(map(repr, cls._allowed_kwargs_))
-    #     #     raise TypeError(
-    #     #         f"{cls.__name__} got unexpected keyword only argument{s} "
-    #     #         f"{' and '.join(filter(None, (', '.join(extra[:-1]), extra[-1])))}. "
-    #     #         f"Allowed "
-    #     #         f"{' and '.join(filter(None, (', '.join(allowed[:-1]), allowed and allowed[-1])))}."
-    #     #     )
-    #     # elif d_kwargs := cls._default_kwargs_:
-    #     #     kwargs = d_kwargs | kwargs
-
-    #     return cls.construct(args, FrozenDict(kwargs))
+    @abstractmethod
+    def __compose__(self) -> "Operation[_T_Co]":
+        return +self
 
     @property
-    def __ident__(self):
-        return self.__args__, self.__kwargs__
+    def atomic(self):
+        return (self,)
 
-    def _(self):
-        return self
+    # def get(self, obj: _T) -> _T_Co:
+    #     return self(obj)
+
+    # def set(self, obj: _T, val: _T_Co):
+    #     raise NotImplementedError(f"{self!r} setter not supported")
+
+    # def delete(self, obj: _T):
+    #     raise NotImplementedError(f"{self!r} deleter not supported")
+
+    @abstractmethod
+    def __call__(self, *a, **kw) -> _T_Co:
+        raise NotImplementedError(f"{self!r} getter not supported")
+
+    def __add__(self, o) -> Self:
+        return NotImplemented
+
+    def __or__(self, o):
+        if isinstance(o, Operation):
+            return +Composition((self, o))
+        elif isinstance(o, abc.Iterable):
+            return +Composition(chain((self,), o))
+        return NotImplemented
+
+    def __ror__(self, o):
+        if isinstance(o, abc.Iterable):
+            return +Composition(chain(o, (self,)))
+        return NotImplemented
 
     def evolve(self, *args, **kwds):
         args = dict(zip(self.__positional_attrs__, args)) if args else _empty_dict
         return attr.evolve(self, **args, **kwds)
 
     if t.TYPE_CHECKING:
-        evolve: type[Self]
-
-    @t.overload
-    def asdict(
-        self,
-        *,
-        recurse: bool = True,
-        filter=None,
-        dict_factory=dict,
-        retain_collection_types: bool = False,
-        value_serializer=None,
-    ):
-        ...
-
-    def asdict(self, **kwds):
-        return attr.asdict(self, **kwds)
-
-    @t.overload
-    def astuple(
-        self,
-        *,
-        recurse: bool = True,
-        filter=None,
-        tuple_factory=tuple,
-        retain_collection_types=False,
-    ):
-        ...
-
-    def astuple(self, **kwds):
-        return attr.astuple(self, **kwds)
-
-    # def __repr__(self):
-    #     params = map(repr, self.__args__), (f"{k}={v!r}" for k, v in self.__kwargs__.items())
-    #     return f"{self.__class__.__name__}({', '.join(p for ps in params for p in ps)})"
-
-    # def __reduce__(self):
-    #     return self.__class__.construct, (self.__args__, self.__kwargs__)
-
-    # def __copy__(self):
-    #     return self.construct(self.__args__, self.__kwargs__)
-
-    # def __eq__(self, o: T_Self) -> bool:
-    #     return o.__class__ is self.__class__ and o.__ident__ == self.__ident__
-
-    # def __ne__(self, o: T_Self) -> bool:
-    #     return o.__class__ is not self.__class__ or o.__ident__ != self.__ident__
-
-    # def __hash__(self) -> int:
-    #     return hash(self.__ident__)
-
-    @abstractmethod
-    def __add__(self, o: T_OneOrManySignatures):
-        return NotImplemented
-
-    @abstractmethod
-    def __radd__(self, o: T_OneOrManySignatures):
-        return NotImplemented
-
-    def __or__(self, o):
-        if isinstance(o, Signature):
-            return Composition((self, o))._()
-        elif isinstance(o, T_ManySignatures):
-            return Composition(chain((self,), o))._()
-        return NotImplemented
-
-    def __ror__(self, o):
-        if isinstance(o, Signature):
-            return Composition((o, self))._()
-        elif isinstance(o, T_ManySignatures):
-            return Composition(chain(o, (self,)))._()
-        return NotImplemented
-
-    # def can_merge(self, o: T_Self):
-    #     return o.__class__ in self._merge_types_ and o.__kwargs__ == self.__kwargs__
-
-    # def merge(self: T_Self, o: T_Self):
-    #     if not self.can_merge(o):
-    #         raise TypeError(f"{self!r}  be merged with {o!r}")
-    #     return self._merge(o)
-
-    # def _merge(self, o):
-    #     return self.construct(self.__args__ + o.__args__, self.__kwargs__ | o.__kwargs__)
-
-    @abstractmethod
-    def __call__(self, *a, **kw) -> _T_Co:
-        raise NotImplementedError(f"{self!r} getter not supported")
-
-    def get(self, obj: _T) -> _T_Co:
-        return self(obj)
-
-    def set(self, obj: _T, val: _T_Co):
-        raise NotImplementedError(f"{self!r} setter not supported")
-
-    def delete(self, obj: _T):
-        raise NotImplementedError(f"{self!r} deleter not supported")
+        evolve: t.ClassVar[type[Self]]
 
     def deconstruct(self):
         path = f"{self.__class__.__module__}.{self.__class__.__name__}"
@@ -351,41 +201,89 @@ class Signature(t.Generic[_T_Co]):
         return path, args, kwargs
 
 
-T_OneOrManySignatures = Signature | T_OneOrManySignatures
+TSignatureOrIterable = Operation | abc.Iterable
+
+
+@_define()
+class GenericOperation(Operation[_T_Co]):
+    ...
+
+
+@_define()
+class UnaryOperation(Operation[_T_Co]):
+    def __call__(self, obj, /):
+        return self.operator(obj)
+
+
+@_define()
+class BinaryOperation(Operation[_T_Co]):
+    operants: tuple[t.Any] = attr.ib(converter=tuple)
+
+    def __call__(self, obj, /):
+        return reduce(self.operator, self.operants, obj)
+
+
+@_define()
+class TernaryOperation(Operation[_T_Co]):
+    operants: tuple[t.Any] = attr.ib(converter=tuple)
+
+    def __call__(self, obj, /):
+        return reduce(self.operator, self.operants, obj)
+
+
+@_define()
+class LazyUnaryOperation(UnaryOperation[_T_Co]):
+    operant: Operation = attr.ib(default=None)
+
+    def __call__(self, obj, /):
+        return self.operator(self.operant(obj))
+
+
+@_define()
+class LazyBinaryOperation(BinaryOperation[_T_Co]):
+    operants: tuple[Operation] = attr.ib(converter=tuple)
+
+    def __call__(self, obj, /):
+        return reduce(self.operator, (op(obj) for op in self.operants))
 
 
 @_define
-class Ref(Signature[_T_Co]):
-    value: _T_Co
+class Ref(GenericOperation[_T_Co]):
+    obj: _T_Co
 
-    def __call__(this, /, self=None) -> _T_Co:
-        return this.value
+    def __call__(self, obj=None, /) -> _T_Co:
+        return self.obj
 
     def __add__(self, o: object):
-        if self.__class__ is o.__class__:
+        if isinstance(self.__class__, Ref):
             return o
         return NotImplemented
 
     def __radd__(self, o: object):
-        if isinstance(o, Signature):
+        if isinstance(o, Operation):
             return self
         return NotImplemented
 
 
 @_define
-class Return(Signature[_T_Co]):
-    def __call__(this, /, self: _T_Co) -> _T_Co:
-        return self
+class WeakRef(Ref[_T_Co]):
+    obj: weakref.ref[_T_Co] = attr.ib(converter=weakref.ref)
+
+    def __call__(self, obj=None, /) -> _T_Co:
+        return self.obj()
+
+
+@_define
+class Identity(UnaryOperation[_T_Co], name="identity"):
+    def __call__(self, obj: _T_Co, /) -> _T_Co:
+        return obj
 
     def __add__(self, o: object):
-        if self.__class__ is o.__class__:
-            return o
+        if isinstance(o, Operation):
+            return +o
         return NotImplemented
 
-    def __radd__(self, o: T_OneOrManySignatures):
-        if self.__class__ is o.__class__:
-            return self
-        return NotImplemented
+    __radd__ = __add__
 
 
 class AttrPath(UserTuple[str]):
@@ -409,8 +307,8 @@ class AttrPath(UserTuple[str]):
 
 
 @_define()
-class Attr(Signature[_T_Co]):
-    path: AttrPath = attr.ib(converter=AttrPath, repr=str)
+class Attr(BinaryOperation[_T_Co]):
+    path: AttrPath = attr.ib(converter=AttrPath, repr=_repr_str)
 
     def __str__(self) -> str:
         return f".{self.path}"
@@ -446,12 +344,72 @@ class Attr(Signature[_T_Co]):
 
     def __add__(self, o: Self):
         if not self.__class__ is o.__class__:
-            print(f"{self.__class__.__name__}.ADD: {self} + {o} = NotImplemented")
             return NotImplemented
         lhs, rhs = self.path, o.path
         path = lhs + rhs
-        print(f"{self.__class__.__name__}.ADD: {self} + {o} = {self.evolve(path)}")
         return self.evolve(path)
+
+
+# @_define()
+# class AttrMutator(Signature[_T_Co]):
+#     name: str = attr.ib()
+#     source: Attr = attr.ib(default=None, repr=str)
+
+
+#     def __str__(self) -> str:
+#         return f".{'.'.join(map(str, filter(None, (self.source, self.name))))}"
+
+#     def resolve(self, obj):
+#         return obj
+
+#     def __attrs_post_init__(self):
+#         if (src := self.source) is not None:
+#             self.__dict__.setdefault('resolve', src)
+
+#     # def __add__(self, o: Self):
+#     #     if not self.__class__ is o.__class__:
+#     #         return NotImplemented
+#     #     lhs, rhs = self.path, o.path
+#     #     path = lhs + rhs
+#     #     return self.evolve(path)
+
+
+# @_define()
+# class AttrGetter(AttrMutator[_T_Co]):
+#     def __call__(self, obj) -> _T_Co:
+#         __tracebackhide__ = True
+#         src = self.resolve(obj)
+#         try:
+#             return getattr(src, self.name)
+#         except AttributeError as e:
+#             raise AttributeSignatureError(self) from e
+
+
+# @_define()
+# class AttrSetter(AttrMutator[_T_Co]):
+#     def __call__(self, obj, value) -> _T_Co:
+#         __tracebackhide__ = True
+
+#         src = self.source
+#         src = src and src(obj)
+
+#         try:
+#             return getattr(src, self.name)
+#         except AttributeError as e:
+#             raise AttributeSignatureError(self) from e
+
+
+# @_define()
+# class AttrDeleter(AttrMutator[_T_Co]):
+#     def __call__(self, obj) -> _T_Co:
+#         __tracebackhide__ = True
+#         path, name = self.path, self.name
+#         try:
+#             for name in path:
+#                 obj = getattr(obj, name)
+#             delattr(obj, name)
+#         except AttributeError as e:
+#             raise AttributeSignatureError(self) from e
 
 
 _lookup_errors = {
@@ -468,9 +426,8 @@ class SubscriptPath(UserTuple[_T_Key]):
         return f"[{']['.join(map(str, self))}]"
 
 
-@_define()
-class Subscript(Signature[_T_Co]):
-    path: SubscriptPath = attr.ib(converter=SubscriptPath, repr=str)
+class _SubscriptMixin:
+    path: tuple[_T_Key]
 
     def __str__(self) -> str:
         return f"{self.path}"
@@ -506,12 +463,15 @@ class Subscript(Signature[_T_Co]):
 
     def __add__(self, o: Self):
         if not self.__class__ is o.__class__:
-            print(f"{self.__class__.__name__}.ADD: {self} + {o} = NotImplemented")
             return NotImplemented
         lhs, rhs = self.path, o.path
         path = lhs + rhs
-        print(f"{self.__class__.__name__}.ADD: {self} + {o} = {self.evolve(path)}")
         return self.evolve(path)
+
+
+@_define()
+class Subscript(_SubscriptMixin, Operation[_T_Co]):
+    path: SubscriptPath = attr.ib(converter=SubscriptPath, repr=_repr_str)
 
 
 _slice_tuple = attrgetter("start", "stop", "step")
@@ -519,12 +479,7 @@ _slice_tuple = attrgetter("start", "stop", "step")
 
 def _to_slice(val):
     __tracebackhide__ = True
-    if isinstance(val, slice):
-        return val
-    elif isinstance(val, int):
-        return slice(val, (val + 1) or None)
-    else:
-        return slice(*val)
+    return val if isinstance(val, slice) else slice(*val)
 
 
 class SlicePath(UserTuple[slice]):
@@ -538,15 +493,18 @@ class SlicePath(UserTuple[slice]):
     def __str__(self) -> str:
         return "".join(f"[{s.start}:{s.stop}:{s.step}]".replace("None", "") for s in self)
 
+    def astuples(self):
+        return tuple(map(_slice_tuple, self))
+
 
 @_define()
 class Slice(Subscript[_T_Co]):
-    path: SlicePath = attr.ib(converter=SlicePath, repr=str, cmp=False)
+    path: SlicePath = attr.ib(converter=SlicePath, repr=_repr_str, cmp=False)
     raw_path: tuple[tuple[_T_Key, _T_Key, _T_Key]] = attr.ib(init=False, repr=False, cmp=True)
 
     @raw_path.default
     def _init_raw_path(self):
-        return tuple(map(_slice_tuple, self.path))
+        return self.path.astuples()
 
     def deconstruct(self):
         path, args, kwargs = super().deconstruct()
@@ -554,7 +512,7 @@ class Slice(Subscript[_T_Co]):
 
 
 @_define()
-class Call(Signature[_T_Co]):
+class Call(Operation[_T_Co]):
     args: tuple[t.Any] = attr.ib(default=(), converter=tuple)
     kwargs: FrozenDict[str, t.Any] = attr.ib(default=FrozenDict(), converter=FrozenDict)
 
@@ -562,16 +520,12 @@ class Call(Signature[_T_Co]):
         params = map(repr, self.args), (f"{k}={v!r}" for k, v in self.kwargs.items())
         return f"({', '.join(p for ps in params for p in ps)})"
 
-    # def __repr__(self):
-    #     params = map(repr, self.__args__), (f"{k}={v!r}" for k, v in self.__kwargs__.items())
-    #     return f"{self.__class__.__name__}({', '.join(p for ps in params for p in ps)})"
-
-    def __call__(this, /, self, *a, **kw) -> _T_Co:
-        return self(*a, *this.args, **this.kwargs | kw)
+    def __call__(this, self, /, *a, **kw) -> _T_Co:
+        return self(*this.args, *a, **this.kwargs | kw)
 
 
 @_define()
-class Func(Signature[_T_Co]):
+class Callback(Operation[_T_Co]):
     func: abc.Callable = attr.ib()
     args: tuple[t.Any] = attr.ib(default=(), converter=tuple)
     kwargs: FrozenDict[str, t.Any] = attr.ib(default=FrozenDict(), converter=FrozenDict)
@@ -585,65 +539,125 @@ class Func(Signature[_T_Co]):
         return f"{self.func.__name__}({', '.join(p for ps in params for p in ps)})"
 
     def __call__(self, /, *a, **kw):
-        return self.func(*a, *self.args, **self.kwargs | kw)
+        return self.func(*self.args, *a, **self.kwargs | kw)
 
 
-def _join(a: list[Signature], b: Signature):
-    if not a:
-        return [b]
+@_define()
+class DynamicCallback(Callback[_T_Co]):
+    func: Operation[abc.Callable] = attr.ib()
+    args: tuple[Operation] = attr.ib(default=(), converter=tuple)
+    kwargs: FrozenDict[str, Operation] = attr.ib(default=FrozenDict(), converter=FrozenDict)
+
+    def __call__(this, self, /, *a, **kw):
+        return this.func(self)(
+            *(sig(self) for sig in this.args),
+            *a,
+            **{k: sig(self) for k, sig in this.kwargs.items() if k not in kw},
+            **kw,
+        )
+
+
+def _iter_compose(seq: abc.Iterable[Operation], composites: type[abc.Iterable[Operation]]):
+    it = iter(seq)
     try:
-        a[-1] = a[-1] + b
+        pre = next(it)
+    except StopIteration:
+        return
+
+    for obj in it:
+        try:
+            pre += obj
+        except TypeError:
+            if composites and isinstance(pre, composites):
+                yield from pre
+            else:
+                yield pre
+            pre = obj
+
+    if composites and isinstance(pre, composites):
+        yield from pre
+    else:
+        yield pre
+
+
+def _join(a: Operation, b: Operation):
+    try:
+        return (a + b,)
     except TypeError:
-        a.append(b)
-    return a
+        return a, b
 
 
-def _reduce(items: T_ManySignatures):
-    return tuple(
-        i for it in reduce(_join, items, []) for i in (it if isinstance(it, Composite) else (it,))
-    )
-
-
-class CompositionPath(UserTuple[Signature]):
+class CompositionPath(UserTuple[Operation]):
     __slots__ = ()
 
     def __new__(cls: type[Self], path: abc.Iterable[str] = ()) -> Self:
         if path.__class__ is cls:
             return path
-        return cls.construct(
-            i
-            for it in reduce(_join, path, [])
-            for i in (it if isinstance(it, Composite) else (it,))
-        )
+        return cls.construct(_iter_compose(path, Composition))
+
+    def first_pack(self, __index=slice(1, None)):
+        return self.__tuple_getitem__(0), self.__tuple_getitem__(__index)
+
+    def last_pack(self, __index=slice(-1)):
+        return self.__tuple_getitem__(__index), self.__tuple_getitem__(-1)
 
     def __str__(self) -> str:
         return "".join(map(str, self))
 
+    def __add__(self, other: Self) -> Self:
+        if not isinstance(other, abc.Iterable):
+            return NotImplemented
+
+        other = self.__class__(other)
+
+        if not (self and other):
+            return other or self
+
+        (head, lhs), (rhs, tail) = self.last_pack(), other.first_pack()
+        return self.construct(head + _join(lhs, rhs) + tail)
+
+    def __radd__(self, other: tuple) -> Self:
+        __tracebackhide__ = True
+        if isinstance(other, abc.Iterable):
+            return self.__class__(other) + self
+        return NotImplemented
+
 
 @_define()
-class Composition(Signature, abc.Sequence[Signature]):
-    path: CompositionPath = attr.ib(default=(), converter=CompositionPath)
+@Composite.register
+class Composition(Operation, abc.Sequence[Operation]):
+    path: CompositionPath = attr.ib(repr=_repr_str, converter=CompositionPath)
 
-    def __call__(this, /, self=_notset, *a, **kw) -> abc.Callable[[t.Any], _T]:
+    @singledispatchmethod
+    def __call__(this, self=_notset, /, *a, **kw) -> abc.Callable[[t.Any], _T]:
         path, pre = this.path, () if self is _notset else (self,)
         for i in range(len(path) - 1):
             pre = (path[i](*pre),)
+
         return path[-1](*pre, *a, **kw)
 
-    def set(this, /, self, val) -> abc.Callable[[t.Any], _T]:
+    @__call__.register
+    def __call__(this, self: object, /, *a, **kw) -> abc.Callable[[t.Any], _T]:
+        path, pre = this.path, () if self is _notset else (self,)
+        for i in range(len(path) - 1):
+            pre = (path[i](*pre),)
+
+        return path[-1](*pre, *a, **kw)
+
+    def set(this, self, /, val) -> abc.Callable[[t.Any], _T]:
         path = this.path
         for i in range(len(path) - 1):
             self = path[i](self)
         return path[-1].set(self, val)
 
-    def delete(this, /, self) -> abc.Callable[[t.Any], _T]:
+    def delete(this, self, /) -> abc.Callable[[t.Any], _T]:
         path = this.path
         for i in range(len(path) - 1):
             self = path[i](self)
         return path[-1].delete(self)
 
-    def _(self):
-        return self.path[0]._() if len(self) == 1 else self
+    def __pos__(self):
+        return +self.path[0] if len(self) == 1 else self
 
     def __str__(self) -> str:
         return " | ".join(map(repr, self))
@@ -655,7 +669,7 @@ class Composition(Signature, abc.Sequence[Signature]):
         return x in self.path
 
     @t.overload
-    def __getitem__(self, key: int) -> Signature:
+    def __getitem__(self, key: int) -> Operation:
         ...
 
     @t.overload
@@ -674,200 +688,315 @@ class Composition(Signature, abc.Sequence[Signature]):
     def __reversed__(self):
         return reversed(self.path)
 
-    def __add__(self, o: T_OneOrManySignatures):
-        if not isinstance(o, Signature):
-            return NotImplemented
-
+    def __add__(self, o: TSignatureOrIterable):
         if isinstance(o, Composition):
-            lhs, rhs = self.path, o.path
+            path = self.path + o.path
         else:
-            lhs, rhs = self.path, (o,)
-
-        if lhs and rhs:
-            path = lhs[:-1] + (*_join([lhs[-1]], rhs[0]),) + rhs[1:]
-        else:
-            path = lhs or rhs
-
-        return self.evolve(path)._()
-
-    def __radd__(self, o: T_OneOrManySignatures):
-        if not isinstance(o, Signature):
             return NotImplemented
+        return +self.evolve(path)
 
+    def __or__(self, o: TSignatureOrIterable):
         if isinstance(o, Composition):
-            lhs, rhs = o.path, self.path
+            path = o.path
+        elif isinstance(o, Operation):
+            path = (o,)
+        elif isinstance(o, abc.Iterable):
+            path = o
         else:
-            lhs, rhs = (o,), self.path
+            return NotImplemented
+        return +self.evolve(self.path + path)
 
-        if lhs and rhs:
-            path = lhs[:-1] + (*_join([lhs[-1]], rhs[0]),) + rhs[1:]
-        else:
-            path = lhs or rhs
+    def __ror__(self, o: TSignatureOrIterable):
+        if isinstance(o, abc.Iterable):
+            return +self.evolve(o + self.path)
+        return NotImplemented
 
-        return self.evolve(path)._()
-
-    def __or__(self, o):
-        if isinstance(o, Signature):
-            return self.__add__(o)
-        return super().__or__(o)
-
-    def __ror__(self, o):
-        if isinstance(o, Signature):
-            return self.__radd__(o)
-        return super().__ror__(o)
+    def deconstruct(self):
+        path = f"{__name__}.{compose.__name__}"
+        return path, list(self), {}
 
 
-_builtin_operators = {
-    "__lt__": operator.lt,
-    "__le__": operator.le,
-    "__eq__": operator.eq,
-    "__ne__": operator.ne,
-    "__ge__": operator.ge,
-    "__gt__": operator.gt,
-    "__not__": operator.not_,
-    "__abs__": operator.abs,
-    "__add__": operator.add,
-    "__and__": operator.and_,
-    "__floordiv__": operator.floordiv,
-    "__index__": operator.index,
-    "__inv__": operator.inv,
-    "__invert__": operator.invert,
-    "__lshift__": operator.lshift,
-    "__mod__": operator.mod,
-    "__mul__": operator.mul,
-    "__matmul__": operator.matmul,
-    "__neg__": operator.neg,
-    "__or__": operator.or_,
-    "__pos__": operator.pos,
-    "__pow__": operator.pow,
-    "__rshift__": operator.rshift,
-    "__sub__": operator.sub,
-    "__truediv__": operator.truediv,
-    "__xor__": operator.xor,
-    "__concat__": operator.concat,
-    "__contains__": operator.contains,
-    "__delitem__": operator.delitem,
-    "__getitem__": operator.getitem,
-    "__setitem__": operator.setitem,
-    "__iadd__": operator.iadd,
-    "__iand__": operator.iand,
-    "__iconcat__": operator.iconcat,
-    "__ifloordiv__": operator.ifloordiv,
-    "__ilshift__": operator.ilshift,
-    "__imod__": operator.imod,
-    "__imul__": operator.imul,
-    "__imatmul__": operator.imatmul,
-    "__ior__": operator.ior,
-    "__ipow__": operator.ipow,
-    "__irshift__": operator.irshift,
-    "__isub__": operator.isub,
-    "__itruediv__": operator.itruediv,
-    "__ixor__": operator.ixor,
+class OperatorType(IntEnum):
+    PLAIN = 0
+    UNARY = 1
+    BINARY = 2
+    TERNARY = 3
+    CALLBACK = 4
+
+    def __bool__(self) -> bool:
+        return True
+
+
+@_define
+class OperatorConfig:
+    name: str = attr.ib(validator=attr.validators.instance_of(str))
+    identifier: str = attr.ib(init=False, repr=False, cmp=False)
+    type: OperatorType = attr.ib(converter=OperatorType, cmp=False)
+    function: abc.Callable = attr.ib(cmp=False, validator=attr.validators.is_callable())
+    magic_name: str = attr.ib(kw_only=True, cmp=False)
+
+    operation_class: t.Type[Operation] = attr.ib(kw_only=True, cmp=False)
+    lazy_operation_class: t.Type[Operation] = attr.ib(kw_only=True, cmp=False)
+
+    @magic_name.default
+    def _init_magic_name(self):
+        if (name := self.name) and name not in _non_trappable_ops:
+            return f"__{name.strip('_')}__"
+
+    @identifier.default
+    def _init_identifier(self):
+        if (name := self.name) and name.isidentifier():
+            if keyword.iskeyword(name):
+                name = f"{name}_"
+            return name
+
+    @function.default
+    def _init_function(self):
+        for mod in (operator, builtins):
+            if hasattr(mod, name := self.identifier or self.name):
+                return getattr(mod, name)
+
+    @operation_class.default
+    def _init_operation_class(self):
+        match self.type:
+            case OperatorType.UNARY:
+                return UnaryOperation
+            case OperatorType.BINARY:
+                return BinaryOperation
+
+    @lazy_operation_class.default
+    def _init_lazy_operation_class(self):
+        match self.type:
+            case OperatorType.UNARY:
+                return LazyUnaryOperation
+            case OperatorType.BINARY:
+                return LazyBinaryOperation
+
+    def __str__(self) -> str:
+        return self.name
+
+
+_builtin_unary_ops = {
+    "not",
+    "abs",
+    "index",
+    "invert",
+    "neg",
+    "pos",
+}
+
+_builtin_binary_ops = {
+    "lt",
+    "le",
+    "eq",
+    "ne",
+    "ge",
+    "gt",
+    "add",
+    "and",
+    "floordiv",
+    "lshift",
+    "mod",
+    "mul",
+    "matmul",
+    "or",
+    "pow",
+    "rshift",
+    "sub",
+    "truediv",
+    "xor",
+    "contains",
+    "delitem",
+    "getitem",
+    "iadd",
+    "iand",
+    "iconcat",
+    "ifloordiv",
+    "ilshift",
+    "imod",
+    "imul",
+    "imatmul",
+    "ior",
+    "ipow",
+    "irshift",
+    "isub",
+    "itruediv",
+    "ixor",
+    "getattr",
+    "delattr",
+}
+
+_builtin_ternary_ops = {
+    "setitem",
+    "setattr",
+}
+
+_builtin_callback_ops = {
+    "attrgetter",
+    "itemgetter",
+    "methodcaller",
 }
 
 
-_builtin_operators = FrozenDict(_builtin_operators)
-_user_operators, _user_operators_names = {}, {}
+_non_trappable_ops = {
+    "not",
+    "contains",
+    "attrgetter",
+    "itemgetter",
+    "methodcaller",
+}
+
+_builtin_ops = (
+    _builtin_unary_ops | _builtin_binary_ops | _builtin_ternary_ops | _builtin_callback_ops
+)
 
 
-class OperationOptions(t.TypedDict):
-    operator: str | abc.Callable
+class OperatorRegistry(abc.Mapping[str, OperatorConfig]):
+    __slots__ = (
+        "__registry",
+        "__weakref__",
+    )
 
+    __registry: ChainMap[str, OperatorConfig]
 
-class _OperatorDict(ChainMap):
-    __slots__ = ()
-
-    def __missing__(self, key):
-        if callable(key):
-            return key
-        raise KeyError(key)
-
-
-ALL_OPERATORS = _OperatorDict(_builtin_operators, _user_operators)
-
-
-class Operation(Signature[_T_Co, _T, Signature, OperationOptions]):
-    __slots__ = ()
-
-    @t.overload
-    def __new__(
-        cls: type[Self], operant: Signature, *operants: Signature, operator: str | t.Callable
-    ) -> Self:
-        ...
-
-    def __new__(cls: type[Self], *operants: Signature, operator: str | t.Callable) -> Self:
-        return cls.construct(
-            tuple(map(ensure_signature, operants)), FrozenDict(operator=ALL_OPERATORS[operator])
-        )
-
-    # @classmethod
-    # def _parse_params_(cls, args, kwargs) -> tuple[tuple[_T_Arg, ...], FrozenDict[str, _T_Kwarg]]:
-    #     args, kwargs = super()._parse_params_(args, kwargs)
-    #     if args[0] not in ALL_OPERATORS:
-    #         raise ValueError(f"invalid operator name {args[0]}")
-    #     return args, kwargs
+    def __init__(self) -> None:
+        self.__registry = ChainMap({}, {})
 
     @property
-    def operator(self):
-        return self.__kwargs__["operator"]
+    def __aliases(self) -> abc.Mapping[str, OperatorConfig]:
+        return self.__registry.maps[1]
 
-    __wrapped__ = operator
+    def __getattr__(self, name: str):
+        try:
+            return self[name]
+        except KeyError:
+            raise AttributeError(name) from None
 
-    def __call__(this, /, self):
-        items, op = self.__args__, self.operator
-        operants = (op(self) for op in items)
-        reduce(this.operator, operants)
-        return this.operator(*(o(self) for o in this.__args__))
+    def __getitem__(cls, key: str):
+        return cls.__registry[key]
+
+    def get(self, key, default=None):
+        return self.__registry.get(key, default)
+
+    def register(self, op: OperatorConfig):
+        registry = self.__registry
+        assert op.name not in registry or registry[op.name] is op
+        assert not (op.identifier and op.identifier in registry)
+        registry[op.name] = op
+        if op.identifier:
+            assert op.identifier not in registry
+            self.__aliases[op.identifier] = op
+        return op
 
 
-class SupportsSignature(t.Protocol[_T_Co]):
-    def _(self) -> Signature[_T_Co]:
-        ...
+operators = OperatorRegistry()
+
+[operators.register(OperatorConfig(name, OperatorType.UNARY)) for name in _builtin_unary_ops]
+[operators.register(OperatorConfig(name, OperatorType.BINARY)) for name in _builtin_binary_ops]
+[operators.register(OperatorConfig(name, OperatorType.TERNARY)) for name in _builtin_ternary_ops]
 
 
-def _var_operator_method(nm, op):
-    def method(self: "Var", /, *args):
-        return Operation(self.__signature, *args, operator=op)
-
-    method.__name__ = nm
-    return method
+_call_compose = methodcaller("__compose__")
 
 
-class Var(t.Generic[_T, _T_Co]):
-    __slots__ = ("_Var__signature",)
-    __signature: Signature[_T_Co]
+@TrapLike.register
+class trap(t.Generic[_T, _T_Co]):
+    __slots__ = ("_trap__src",)
+    __src: tuple[Operation[_T_Co]]
 
     __class_getitem__ = classmethod(GenericAlias)
 
-    for nm, op in _builtin_operators.items():
-        vars()[nm] = _var_operator_method(nm, op)
-    del nm, op
-
-    def __new__(
-        cls: type[Self], sig: Signature[_T_Co] = Composition()
-    ) -> _T | SupportsSignature[_T_Co]:
+    def __new__(cls: type[Self], *src: Operation[_T_Co]) -> _T | TrapLike[_T_Co]:
         self = _object_new(cls)
-        object.__setattr__(self, "_Var__signature", sig)
+        object.__setattr__(self, "_trap__src", src)
         return self
 
-    def _(self):
-        return self.__signature
-
-    def __extend__(self, *expr):
-        return self.__class__(self.__signature | expr)
+    def __compose__(self):
+        if src := self.__src:
+            return +Composition(src)
 
     def __getattr__(self, name: str):
-        return self.__extend__(Attr(name))
+        if isinstance(name, TrapLike):
+            return self.__class__(BinaryOperation("getattr", map(_call_compose, (self, name))))
+        return self.__class__(*self.__src, Attr(name))
 
+    methodname: str = attr.ib(init=False)
+
+    @methodname.default
+    def _init_qualname(self):
+        return f"__{self.name}__"
+
+    def __getattr__(self, name: str):
+        if isinstance(name, TrapLike):
+            return self.__class__(BinaryOperation("getattr", map(_call_compose, (self, name))))
+        return self.__class__(*self.__src, Attr([name]))
+
+    @singledispatchmethod
     def __getitem__(self, key):
-        cls = Slice if isinstance(key, slice) else Subscript
-        return self.__extend__(cls(key))
+        return self.__class__(*self.__src, Subscript(key))
+
+    @__getitem__.register
+    def __getitem__(self, key: TrapLike):
+        return self.__class__(BinaryOperation("getitem", map(_call_compose, (self, key))))
+
+    @__getitem__.register
+    def __getitem__(self, key: slice):
+        return self.__class__(*self.__src, Slice(key))
 
     def __call__(self, /, *args, **kwargs):
-        return self.__extend__(Call(*args, **kwargs))
+        args, ref_args, ref_kwargs = list(args), [], []
+        lazy_args = {
+            i: v
+            for i, v in enumerate(args)
+            if isinstance(v, TrapLike) and (not isinstance(v, Ref) or ref_args.append(i))
+        }
+        lazy_kwargs = {
+            k: v
+            for k, v in kwargs.items()
+            if isinstance(v, TrapLike) and (not isinstance(v, Ref) or ref_kwargs.append(i))
+        }
+        for i in ref_args:
+            args[i] = args[i].value
+        for k in ref_kwargs:
+            kwargs[k] = kwargs[k].value
 
-    def __or__(self, o):
-        return self.__extend__(Operation(ensure_signature(o), operator="or_"))
+        if lazy_args or lazy_kwargs:
+            return DynamicCallback(self.__compose__(), args, kwargs)
 
-    def __add__(self, o):
-        return self.__extend__(Operation(ensure_signature(o), operator="add"))
+        return self.__class__(*self.__src, Call(args, kwargs))
+
+    @classmethod
+    def __define_operator_method__(cls: type[Self], op: OperatorConfig):
+        name = op.name
+        if cls is not None:
+            if any(b.__dict__.get(name) is not None for b in cls.__mro__ if issubclass(b, trap)):
+                return
+
+        match op.type:
+            case OperatorType.UNARY:
+
+                def method(self: Self):
+                    return self.__class__(self.__src | UnaryOperation(name))
+
+            case OperatorType.BINARY:
+
+                def method(self: Self, o: Self):
+                    if isinstance(o, trap):
+                        return self.__class__(LazyBinaryOperation(name, [self.__src, o.__src]))
+                    elif isinstance(o, Operation):
+                        return self.__class__(LazyBinaryOperation(name, [self.__src, o]))
+                    return self.__class__(self.__src | BinaryOperation(name, [o]))
+
+            case OperatorType.TERNARY:
+
+                def method(self: Self):
+                    return self.__class__(self.__src | UnaryOperation(name))
+
+        method.__name__ = op.magic_name
+
+        if cls is None:
+            return method
+        setattr(cls, op, method)
+
+
+[trap.__define_operator_method__(op) for op in operators.values() if op.magic_name]
