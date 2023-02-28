@@ -2,6 +2,7 @@ import operator
 import sys
 import typing as t
 from collections import abc
+from functools import partial
 from itertools import chain
 
 import attr
@@ -125,6 +126,13 @@ def pipe(pipes, /, *args, **kwargs):
     """
     Pipes values through given pipes.
 
+    Same As:
+        it = iter(pipes)
+        obj = next(it)(*args, **kwargs)
+        for pipe in it:
+            obj = pipe(obj)
+        return obj
+
     When called on a value, it runs all wrapped callable, returning the
     *last* value.
 
@@ -134,6 +142,22 @@ def pipe(pipes, /, *args, **kwargs):
     :param pipes: A sequence of callables.
     """
     return pipeline(pipes)(*args, **kwargs)
+
+
+def tap(pipes, /, *args, **kwargs):
+    """
+    Pipes first argument (`*args[:1]`) through `pipes[:-1]` then calls `pipes[-1]`
+    with the `result` and `*arg[1:]` and `**kwargs`.
+
+    Same As:
+        pipes = tuple(pipes)
+        for pipe in pipes[:-1]:
+            obj = pipe(*args[:1])
+            args = obj, *args[1:],
+
+        return pipes[-1](*args, **kwargs)
+    """
+    return pipeline(pipes, tap=-1)(*args, **kwargs)
 
 
 _slice_to_tuple = operator.attrgetter("start", "stop", "step")
@@ -162,50 +186,40 @@ if not t.TYPE_CHECKING:
 
 
 @_attr_define(slots=True, weakref_slot=True, hash=True)
-class Callback(t.Generic[_P, _R]):
-    func: abc.Callable[_P, _R] = attr.field(validator=attr.validators.is_callable())
+class callback(t.Generic[_P, _R]):
+    function: abc.Callable[_P, _R] = attr.field(validator=attr.validators.is_callable())
     args: tuple = attr.field(default=(), converter=tuple)
     kwargs: dict = attr.field(factory=_frozen_dict, converter=_frozen_dict)
 
-    @t.overload
-    @classmethod
-    def define(cls, callback: abc.Callable[_P, _R], args: tuple = ..., kwargs: dict = ...) -> Self:
-        ...
-
-    @classmethod
-    def define(cls, *a, **kw):
+    def __new__(
+        cls: type[Self], func: abc.Callable[_P, _R], /, *args: _P.args, **kwargs: _P.kwargs
+    ) -> Self:
         self = _object_new(cls)
-        self.__attr_init__(*a, **kw)
+        self.__attrs_init__(func, args, kwargs)
         return self
 
-    def __new__(cls: type[Self], func, /, *args, **kwargs) -> Self:
-        return cls.define(func, args, kwargs)
-
-    def __iter__(self):
-        yield self.func
-        yield self.args
-        yield self.kwargs
-
-    def __call__(self, /, *args: _P.args, **kwds: _P.kwargs):
-        return self.func(*args, *self.args, **self.kwargs | kwds)
+    def __call__(self, /, *args: _P.args, **kwargs: _P.kwargs):
+        return self.function(*args, *self.args, **self.kwargs | kwargs)
 
     def __reduce__(self):
-        return self.__class__.define, (self.func, self.args, self.kwargs)
+        if kwargs := self.kwargs:
+            return partial(self.__class__, self.function, **kwargs), self.args
+        return self.__class__, (self.function,) + self.args
 
     @property
     def __wrapped__(self):
-        return self.func
+        return self.function
 
     def deconstruct(self):
         return f"{self.__class__.__module__}.{self.__class__.__name__}", [
-            self.func,
+            self.function,
             self.args,
             self.kwargs,
         ]
 
 
 @attr.define(slots=True, weakref_slot=True, hash=True, cache_hash=True)
-class pipeline(abc.Sequence[Callback[_P, _R]], t.Generic[_P, _R]):
+class pipeline(abc.Sequence[callback[_P, _R]], t.Generic[_P, _R]):
     """A callable that composes multiple callables into one.
 
     When called on a value, it runs all wrapped callable, returning the
@@ -217,7 +231,7 @@ class pipeline(abc.Sequence[Callback[_P, _R]], t.Generic[_P, _R]):
     :param pipes: A sequence of callables.
     """
 
-    pipes: tuple[Callback[_P, _R], ...] = attr.ib(default=(), converter=tuple)
+    pipes: tuple[callback[_P, _R], ...] = attr.ib(default=(), converter=tuple)
     args: tuple = attr.ib(default=(), converter=tuple)
     kwargs: dict = attr.ib(factory=_frozen_dict, converter=_frozen_dict)
     tap: int | slice | tuple[int, int, int] = attr.ib(
@@ -281,7 +295,7 @@ class pipeline(abc.Sequence[Callback[_P, _R]], t.Generic[_P, _R]):
         ...
 
     @t.overload
-    def __getitem__(self, key: int) -> Callback[_P, _R]:
+    def __getitem__(self, key: int) -> callback[_P, _R]:
         ...
 
     def __getitem__(self, key):
@@ -302,7 +316,7 @@ class pipeline(abc.Sequence[Callback[_P, _R]], t.Generic[_P, _R]):
         def evolve(
             self,
             *,
-            pipes: abc.Iterable[Callback[_P, _R]] = None,
+            pipes: abc.Iterable[callback[_P, _R]] = None,
             args: tuple = None,
             kwargs: dict = None,
             tap: int | slice | tuple[int, int, int] = None,
