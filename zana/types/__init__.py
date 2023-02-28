@@ -62,6 +62,8 @@ class Interface(ABC):
         total: bool = None,
         members: abc.Iterable[str] = None,
         check: tuple[type] | type | bool = None,
+        parents: tuple[type] | type = None,
+        forbidden: tuple[type] | type = None,
         inverse: bool = None,
         strict: bool = None,
     ) -> None:
@@ -78,15 +80,31 @@ class Interface(ABC):
             if members is not None:
                 members = tuple(members)
 
+            if parents is not None:
+                if not isinstance(parents, (list | tuple)):
+                    parents = (parents,)
+
+            if forbidden is not None:
+                if not isinstance(forbidden, (list | tuple)):
+                    forbidden = (forbidden,)
+
             @classmethod
             def __subclasshook__(self, sub: type[Self]):
                 if self is cls:
                     names = self.__abstractmethods__ if members is None else members
                     print(
-                        f"-> issubclass({sub.__name__},  {cls.__name__}) = "
+                        f"issubclass({sub.__name__},  {cls.__name__}) {parents = }, {forbidden = }\n -->"
+                        f""
                         f"{predicate.__name__}({sub.__name__}, {[*names]}, {check}) is "
                         f"{expected} = {predicate(sub, names, check) is expected}\n"
                     )
+
+                    if parents and any(not issubclass(sub, p) for p in parents):
+                        return NotImplemented
+
+                    if forbidden and any(issubclass(sub, p) for p in forbidden):
+                        return NotImplemented
+
                     if names and predicate(sub, names, check) is expected:
                         return True
                 return NotImplemented

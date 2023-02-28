@@ -1,8 +1,9 @@
 import typing as t
-from abc import abstractmethod
+from abc import ABC, abstractmethod
 from collections import ChainMap as BaseChainMap
 from collections import UserString, abc
 from copy import deepcopy
+from functools import update_wrapper
 from types import FunctionType, MethodType, NoneType
 
 from typing_extensions import Self
@@ -132,42 +133,29 @@ class UserDict(dict[_KT, _VT]):
 
     __slots__ = ()
 
-    _vars_ = {*vars(), "_vars_"}
-
     __dict_or__ = dict.__or__
     __dict_ror__ = dict.__ror__
+    __dict_repr__ = dict.__repr__
+
+    def __evolve_args__(self, new=()) -> tuple:
+        return (new,)
 
     def __repr__(self) -> str:
-        return f"<{self.__class__.__name__}: {super().__repr__()}>"
+        return f"<{self.__class__.__name__}: {self.__dict_repr__()}>"
 
-    def __or__(self, x):
-        return self.__class__(self.__dict_or__(x))
+    def __or__(self, x) -> Self:
+        return self.__class__(*self.__evolve_args__(self.__dict_or__(x)))
 
-    def __ror__(self, x):
-        rv = self.__dict_ror__(x)
-        return self.__class__(rv)
+    def __ror__(self, x) -> Self:
+        return self.__class__(*self.__evolve_args__(self.__dict_ror__(x)))
 
-    def copy(self):
-        return self.__class__(self)
+    def copy(self) -> Self:
+        return self.__class__(*self.__evolve_args__(self))
 
     __copy__ = copy
 
     def __reduce__(self):
-        return self.__class__, (dict(self),)
-
-    _vars_ = _vars_ ^ {*vars()}
-    __local_vars = tuple(_vars_)
-    del _vars_
-
-    @classmethod
-    def define_subclass(self: type[Self], cls):
-        if not issubclass(cls, self):
-            assert issubclass(cls, dict)
-            for name in self.__local_vars:
-                if not hasattr(cls, name) or getattr(cls, name) is getattr(dict, name, _empty):
-                    setattr(cls, name, getattr(self, name))
-
-        return cls
+        return self.__class__, self.__evolve_args__({**self})
 
 
 class ReadonlyMapping(abc.Mapping[_KT, _VT]):
@@ -309,47 +297,42 @@ class ChainMap(BaseChainMap[_KT, _VT]):
     #     return {**o, **self}
 
 
-class DefaultDict(dict[_KT, _VT | _FT]):
+class DefaultDict(UserDict[_KT, _VT | _FT]):
     __slots__ = ("_default",)
 
-    _default: t.Final[_FT]
-    __dict_init = dict.__init__
-    __dict_or = dict.__or__
-    __dict_ror = dict.__ror__
-    __dict_setdefault = dict.setdefault
+    __dict_init__ = dict.__init__
+    __dict_setdefault__ = dict.setdefault
 
-    def __init__(self, arg: Self = (), fallback: _FT = None, /, **kwargs):
-        self.__dict_init(arg, **kwargs)
-        self._default = fallback
+    def __init__(self, arg: Self = (), default: _FT = None, /, **kwargs):
+        self.__dict_init__(arg, **kwargs)
+        self._default = default
+
+    def __evolve_args__(self, new=()):
+        return (new, self._default)
 
     def __missing__(self, key):
         return self._default
 
-    def __repr__(self) -> str:
-        return f"<{self.__class__.__name__}: {self._default!r} {super().__repr__()}>"
-
-    def __or__(self, x):
-        return self.__class__(self.__dict_or(x), self._default)
-
-    def __ror__(self, x):
-        return self.__class__(self.__dict_ror(x), self._default)
-
-    def copy(self):
-        return self.__class__(self, self._default)
-
-    __copy__ = copy
-
-    def __reduce__(self):
-        return self.__class__, (dict(self), self._default)
-
     def setdefault(self, key: _KT, value: _VT = _empty):
         if value is _empty:
-            value = self._default
-        return self.__dict_setdefault(key, value)
+            value = self.__missing__(key)
+        return self.__dict_setdefault__(key, value)
+
+    def __deepcopy__(self, memo: dict):
+        cp = {deepcopy(k, memo): deepcopy(v, memo) for k, v in self.items()}
+        return self.__class__(*self.__evolve_args__(cp))
 
 
-@UserDict.define_subclass
-class DefaultKeyDict(dict[_KT, _VT]):
+class FallbackDict(DefaultDict[_KT, _VT | _FT]):
+    __slots__ = ()
+
+    _default: abc.Mapping[_KT, _FT]
+
+    def __missing__(self, key: _KT):
+        return self._default[key]
+
+
+class DefaultKeyDict(UserDict[_KT, _VT]):
     """A dict that returns the `key` on attempts to retrieve a missing item.
     Example:
         d = DefaultKeyDict(abc=123)

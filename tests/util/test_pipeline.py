@@ -4,7 +4,7 @@ from unittest.mock import CallableMixin
 
 import pytest
 
-from zana.util import call, pipe, pipeline
+from zana.util.operator import call, pipe, pipeline
 
 
 class test_pipeline:
