@@ -1,12 +1,129 @@
+import builtins
 import operator
 import sys
 import typing as t
+from builtins import delattr, getattr, setattr
 from collections import abc
 from functools import partial
 from itertools import chain
+from operator import (
+    abs,
+    add,
+    and_,
+    attrgetter,
+    concat,
+    contains,
+    countOf,
+    delitem,
+    eq,
+    floordiv,
+    ge,
+    getitem,
+    gt,
+    iadd,
+    iand,
+    iconcat,
+    ifloordiv,
+    ilshift,
+    imatmul,
+    imod,
+    imul,
+    index,
+    indexOf,
+    inv,
+    invert,
+    ior,
+    ipow,
+    irshift,
+    is_,
+    is_not,
+    isub,
+    itemgetter,
+    itruediv,
+    ixor,
+    le,
+    length_hint,
+    lshift,
+    lt,
+    matmul,
+    mod,
+    mul,
+    ne,
+    neg,
+    not_,
+    or_,
+    pos,
+    pow,
+    rshift,
+    setitem,
+    sub,
+    truediv,
+    truth,
+    xor,
+)
 
 import attr
 from typing_extensions import ParamSpec, Self
+
+__all__ = [
+    "getattr",
+    "setattr",
+    "delattr",
+    "abs",
+    "add",
+    "and_",
+    "attrgetter",
+    "concat",
+    "contains",
+    "countOf",
+    "delitem",
+    "eq",
+    "floordiv",
+    "ge",
+    "getitem",
+    "gt",
+    "iadd",
+    "iand",
+    "iconcat",
+    "ifloordiv",
+    "ilshift",
+    "imatmul",
+    "imod",
+    "imul",
+    "index",
+    "indexOf",
+    "inv",
+    "invert",
+    "ior",
+    "ipow",
+    "irshift",
+    "is_",
+    "is_not",
+    "isub",
+    "itemgetter",
+    "itruediv",
+    "ixor",
+    "le",
+    "length_hint",
+    "lshift",
+    "lt",
+    "matmul",
+    "methodcaller",
+    "mod",
+    "mul",
+    "ne",
+    "neg",
+    "not_",
+    "or_",
+    "pos",
+    "pow",
+    "rshift",
+    "setitem",
+    "sub",
+    "truediv",
+    "truth",
+    "xor",
+]
 
 _R = t.TypeVar("_R")
 _T = t.TypeVar("_T")
@@ -16,6 +133,10 @@ _T_Raise = t.TypeVar("_T_Raise", bound=BaseException, covariant=True)
 
 _P = ParamSpec("_P")
 _object_new = object.__new__
+
+getattr = builtins.getattr
+delattr = builtins.delattr
+setattr = builtins.setattr
 
 
 def apply(
@@ -187,7 +308,7 @@ if not t.TYPE_CHECKING:
 
 @_attr_define(slots=True, weakref_slot=True, hash=True)
 class callback(t.Generic[_P, _R]):
-    function: abc.Callable[_P, _R] = attr.field(validator=attr.validators.is_callable())
+    func: abc.Callable[_P, _R] = attr.field(validator=attr.validators.is_callable())
     args: tuple = attr.field(default=(), converter=tuple)
     kwargs: dict = attr.field(factory=_frozen_dict, converter=_frozen_dict)
 
@@ -195,27 +316,86 @@ class callback(t.Generic[_P, _R]):
         cls: type[Self], func: abc.Callable[_P, _R], /, *args: _P.args, **kwargs: _P.kwargs
     ) -> Self:
         self = _object_new(cls)
-        self.__attrs_init__(func, args, kwargs)
+        self.__attrs_init__(func, *(x for x in (args, kwargs) if x))
         return self
 
     def __call__(self, /, *args: _P.args, **kwargs: _P.kwargs):
-        return self.function(*args, *self.args, **self.kwargs | kwargs)
+        return self.func(*self.args, *args, **self.kwargs | kwargs)
 
     def __reduce__(self):
         if kwargs := self.kwargs:
-            return partial(self.__class__, self.function, **kwargs), self.args
-        return self.__class__, (self.function,) + self.args
+            return partial(self.__class__, self.func, **kwargs), self.args
+        return self.__class__, (self.func,) + self.args
 
     @property
     def __wrapped__(self):
-        return self.function
+        return self.func
 
     def deconstruct(self):
-        return f"{self.__class__.__module__}.{self.__class__.__name__}", [
-            self.function,
-            self.args,
+        return (
+            f"{self.__class__.__module__}.{self.__class__.__name__}",
+            [self.func, *self.args],
             self.kwargs,
-        ]
+        )
+
+
+@_attr_define(slots=True, weakref_slot=True, hash=True)
+class boundcallback(callback[_P, _R]):
+    def __call__(self, obj, /, *args: _P.args, **kwargs: _P.kwargs):
+        return self.func(obj, *self.args, *args, **self.kwargs | kwargs)
+
+
+@_attr_define(slots=True, weakref_slot=True, hash=True)
+class caller(t.Generic[_P, _R]):
+    args: tuple = attr.field(default=(), converter=tuple)
+    kwargs: dict = attr.field(factory=_frozen_dict, converter=_frozen_dict)
+
+    def __new__(cls: type[Self], /, *args: _P.args, **kwargs: _P.kwargs) -> Self:
+        self = _object_new(cls)
+        self.__attrs_init__(*(x for x in (args, kwargs) if x))
+        return self
+
+    def __call__(self, obj: abc.Callable[_P, _R], /, *args: _P.args, **kwargs: _P.kwargs):
+        return obj(*self.args, *args, **self.kwargs | kwargs)
+
+    def __reduce__(self):
+        if kwargs := self.kwargs:
+            return partial(self.__class__, **kwargs), self.args
+        return self.__class__, self.args
+
+    def deconstruct(self):
+        return (
+            f"{self.__class__.__module__}.{self.__class__.__name__}",
+            [self.function, *self.args],
+            self.kwargs,
+        )
+
+
+@_attr_define(slots=True, weakref_slot=True, hash=True)
+class methodcaller(t.Generic[_P, _R]):
+    name: str = attr.field(validator=attr.validators.instance_of(str))
+    args: tuple = attr.field(default=(), converter=tuple)
+    kwargs: dict = attr.field(factory=_frozen_dict, converter=_frozen_dict)
+
+    def __new__(cls: type[Self], name: str, /, *args: _P.args, **kwargs: _P.kwargs) -> Self:
+        self = _object_new(cls)
+        self.__attrs_init__(name, *(x for x in (args, kwargs) if x))
+        return self
+
+    def __call__(self, obj: object, /, *args: _P.args, **kwargs: _P.kwargs):
+        return getattr(obj, self.name)(*self.args, *args, **self.kwargs | kwargs)
+
+    def __reduce__(self):
+        if kwargs := self.kwargs:
+            return partial(self.__class__, self.name, **kwargs), self.args
+        return self.__class__, (self.name,) + self.args
+
+    def deconstruct(self):
+        return (
+            f"{self.__class__.__module__}.{self.__class__.__name__}",
+            [self.name, *self.args],
+            self.kwargs,
+        )
 
 
 @attr.define(slots=True, weakref_slot=True, hash=True, cache_hash=True)

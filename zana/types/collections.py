@@ -198,7 +198,8 @@ class ReadonlyMapping(abc.Mapping[_KT, _VT]):
     @classmethod
     def define(self: type[Self], cls):
         for name in self.__local_vars:
-            setattr(cls, name, getattr(self, name))
+            val = self.__dict__[name]
+            setattr(cls, name, val)
         self.register(cls)
         return cls
 

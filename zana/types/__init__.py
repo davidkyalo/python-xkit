@@ -111,6 +111,11 @@ class Interface(ABC):
 
             cls.__subclasshook__ = __subclasshook__
 
+            def __new__(cls: type[Self], *args, **kwargs) -> Self:
+                raise TypeError(f"interfaces cannot be instantiated. {cls} called.")
+
+            cls.__init__ = cls.__new__ = __new__
+
 
 class Descriptor(Interface, t.Generic[_T, _RT], total=False):
     __slots__ = ()

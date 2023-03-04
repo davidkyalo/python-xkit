@@ -1,17 +1,11 @@
-import operator
-import sys
 import typing as t
 from collections import abc
 from functools import reduce
 from importlib import import_module
-from itertools import chain
-from operator import attrgetter
 from threading import RLock
 
-import attr
 from typing_extensions import ParamSpec, Self
 
-import zana.zana  # type: ignore
 from zana.types import NotSet
 
 # _P = ParamSpec("_P")
