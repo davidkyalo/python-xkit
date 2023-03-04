@@ -1,9 +1,8 @@
 import typing as t
-from abc import ABC, abstractmethod
+from abc import abstractmethod
 from collections import ChainMap as BaseChainMap
 from collections import UserString, abc
 from copy import deepcopy
-from functools import update_wrapper
 from types import FunctionType, MethodType, NoneType
 
 from typing_extensions import Self

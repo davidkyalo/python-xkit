@@ -1,32 +1,21 @@
-import builtins
 import keyword
 import operator as builtin_operator
 import typing as t
-import weakref
 from abc import abstractmethod
 from collections import abc
-from functools import partial, reduce, singledispatchmethod, update_wrapper
+from functools import singledispatchmethod
 from itertools import chain
 from logging import getLogger
 from operator import attrgetter, methodcaller
-from pickle import TRUE
 from types import GenericAlias, new_class
 
 import attr
 from typing_extensions import Self
 
 from zana.types import Interface
-from zana.types.collections import (
-    Atomic,
-    ChainMap,
-    Composite,
-    DefaultKeyDict,
-    FallbackDict,
-    FrozenDict,
-    UserTuple,
-)
+from zana.types.collections import Composite, FallbackDict, FrozenDict, UserTuple
 from zana.types.enums import IntEnum
-from zana.util import cached_attr, operator
+from zana.util import operator
 
 _T = t.TypeVar("_T")
 _T_Co = t.TypeVar("_T_Co", covariant=True)

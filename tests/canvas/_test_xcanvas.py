@@ -14,7 +14,6 @@ from zana.canvas import (
     Call,
     Callback,
     Composition,
-    IndexSignatureError,
     KeySignatureError,
     Operation,
     Slice,
