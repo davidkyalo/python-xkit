@@ -308,7 +308,7 @@ class test_Composition:
 
         set_ex = {cls(chain(args, [ex]))}
         set_rv = {
-            sig.evolve(sig.path + (ex,)),
+            sig.evolve(sig.operations + (ex,)),
             sig | ex,
             (ex | sig[::-1])[::-1],
             sig | cls([ex]),

@@ -1,4 +1,5 @@
-from inspect import getmembers, isfunction, ismethod
+import sys
+from inspect import getmembers, isfunction
 from itertools import repeat
 
 from zana.canvas import operators, trap
@@ -30,3 +31,8 @@ print(
     *(f" - {i}: {n} {v}" for i, (n, v) in enumerate(getmembers(trap, isfunction), 1)),
     sep="\n  ",
 )
+
+print(f"{sys.getrecursionlimit() = }")
+sys.setrecursionlimit(999)
+
+print(trap().abc + trap().xyz)

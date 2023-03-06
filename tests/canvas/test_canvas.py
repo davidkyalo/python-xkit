@@ -7,17 +7,24 @@ from unittest.mock import MagicMock, Mock
 import pytest as pyt
 
 from zana.canvas import (
+    UNARY_OP,
     BinaryOperation,
+    Composition,
     GenericOperation,
     Identity,
     LazyBinaryOperation,
     LazyGenericOperation,
     LazyTernaryOperation,
     LazyUnaryOperation,
+    OperationType,
     Ref,
     TernaryOperation,
     UnaryOperation,
+    _builtin_ops,
+    operation,
+    operators,
     ops,
+    trap,
 )
 from zana.util import try_import
 
@@ -39,7 +46,7 @@ class test_UnaryOperation:
     )
     def test_eager(self, op_name: str, input, expected):
         op = ops[op_name]
-        sub = op.define()
+        sub = op()
         print(op.name, "\n", str(op), repr(op))
         print("", str(sub), repr(sub), "\n")
 
@@ -65,7 +72,7 @@ class test_UnaryOperation:
     )
     def test_lazy(self, op_name: str, input, expected):
         op = ops[op_name]
-        sub = op.define(Ref(input), lazy=True)
+        sub = op(Ref(input), lazy=True)
         print(op.name, "\n", str(op), repr(op))
         print("", str(sub), repr(sub), "\n")
 
@@ -124,7 +131,7 @@ class test_BinaryOperation:
     )
     def test_eager(self, op_name: str, input, other, expected):
         op = ops[op_name]
-        sub = op.define(other)
+        sub = op(other)
         print(op.name, "\n", str(op), repr(op))
         print("", str(sub), repr(sub), "\n")
 
@@ -134,11 +141,11 @@ class test_BinaryOperation:
         assert sub == copy(sub) == try_import(d_path)(*d_args, **d_kwds)
         dcp = deepcopy(sub)
         obj = sub(input)
-        if op.terminal:
+        if sub.isterminal:
             assert obj is None
             obj = input
         assert obj == expected
-        if op.inplace:
+        if sub.inplace:
             immutable = isinstance(input, str | int | float | tuple)
             assert (immutable and input != obj) or (not immutable and input is obj)
 
@@ -188,7 +195,7 @@ class test_BinaryOperation:
     )
     def test_lazy(self, op_name: str, input, other, expected):
         op = ops[op_name]
-        sub = op.define(Identity(), Ref(other), lazy=True)
+        sub = op(Identity(), Ref(other), lazy=True)
         print(op.name, "\n", str(op), repr(op))
         print("", str(sub), repr(sub), "\n")
 
@@ -198,11 +205,11 @@ class test_BinaryOperation:
         assert sub == copy(sub) == try_import(d_path)(*d_args, **d_kwds)
         dcp = deepcopy(sub)
         obj = sub(input)
-        if op.terminal:
+        if sub.isterminal:
             assert obj is None
             obj = input
         assert obj == expected
-        if op.inplace:
+        if sub.inplace:
             immutable = isinstance(input, str | int | float | tuple)
             assert (immutable and input != obj) or (not immutable and input == obj)
 
@@ -221,7 +228,7 @@ class test_TernaryOperation:
     )
     def test_eager(self, op_name, input, args, c_args, expected):
         op = ops[op_name]
-        sub = op.define(args)
+        sub = op(args)
         print(op.name, "\n", str(op), repr(op))
         print("", str(sub), repr(sub), "\n")
 
@@ -231,11 +238,11 @@ class test_TernaryOperation:
         assert sub == copy(sub) == try_import(d_path)(*d_args, **d_kwds)
         dcp = deepcopy(sub)
         obj = sub(input, *c_args)
-        if op.terminal:
+        if sub.isterminal:
             assert obj is None
             obj = input
         assert obj == expected
-        if op.inplace:
+        if sub.inplace:
             immutable = isinstance(input, str | int | float | tuple)
             assert (immutable and input != obj) or (not immutable and input is obj)
 
@@ -252,7 +259,7 @@ class test_TernaryOperation:
     )
     def test_lazy(self, op_name: str, input, args, c_args, expected):
         op = ops[op_name]
-        sub = op.define(Identity(), map(Ref, args), lazy=True)
+        sub = op(Identity(), map(Ref, args), lazy=True)
         print(op.name, "\n", str(op), repr(op))
         print("", str(sub), repr(sub), "\n")
 
@@ -262,11 +269,11 @@ class test_TernaryOperation:
         assert sub == copy(sub) == try_import(d_path)(*d_args, **d_kwds)
         dcp = deepcopy(sub)
         obj = sub(input, *c_args)
-        if op.terminal:
+        if sub.isterminal:
             assert obj is None
             obj = input
         assert obj == expected
-        if op.inplace:
+        if sub.inplace:
             immutable = isinstance(input, str | int | float | tuple)
             assert (immutable and input != obj) or (not immutable and input == obj)
 
@@ -288,7 +295,7 @@ class test_GenericOperation:
     )
     def test_eager(self, op_name, input: Mock, args, kwds, c_args, c_kwds, expected):
         op = ops[op_name]
-        sub = op.define(args, kwds)
+        sub = op(args, kwds)
         print(op.name, "\n", str(op), repr(op))
         print("", str(sub), repr(sub), "\n")
 
@@ -298,14 +305,14 @@ class test_GenericOperation:
         assert sub == copy(sub) == try_import(d_path)(*d_args, **d_kwds)
         dcp = deepcopy(sub)
         obj = sub(input, *c_args, **c_kwds)
-        if op.terminal:
+        if sub.isterminal:
             assert obj is None
             obj = input
         if isinstance(input, Mock) and expected is input.return_value:
             input.assert_called_once_with(*args, *c_args, **kwds | c_kwds)
         assert obj == expected
 
-        if op.inplace:
+        if sub.inplace:
             immutable = isinstance(input, str | int | float | tuple)
             assert (immutable and input != obj) or (not immutable and input is obj)
 
@@ -325,7 +332,7 @@ class test_GenericOperation:
     )
     def test_lazy(self, op_name, input: Mock, args, kwds, c_args, c_kwds, expected):
         op = ops[op_name]
-        sub = op.define(Identity(), map(Ref, args), {k: Ref(v) for k, v in kwds.items()}, lazy=True)
+        sub = op(Identity(), map(Ref, args), {k: Ref(v) for k, v in kwds.items()}, lazy=True)
         print(op.name, "\n", str(op), repr(op))
         print("", str(sub), repr(sub), "\n")
 
@@ -335,13 +342,146 @@ class test_GenericOperation:
         assert sub == copy(sub) == try_import(d_path)(*d_args, **d_kwds)
         dcp = deepcopy(sub)
         obj = sub(input, *c_args, **c_kwds)
-        if op.terminal:
+        if sub.isterminal:
             assert obj is None
             obj = input
         if isinstance(input, Mock) and expected is input.return_value:
             input.assert_called_once_with(*args, *c_args, **kwds | c_kwds)
         assert obj == expected
 
-        if op.inplace:
+        if sub.inplace:
             immutable = isinstance(input, str | int | float | tuple)
             assert (immutable and input != obj) or (not immutable and input is obj)
+
+
+class test_Composition:
+    @pyt.mark.parametrize(
+        "ops, args, kwds, expected",
+        [
+            (
+                [
+                    ("iadd", ([SimpleNamespace(abc=[10])],)),
+                    ("getitem", (3,)),
+                    ("getattr", ("abc",)),
+                    ("gt", ([2],)),
+                ],
+                ([1, 2, 3],),
+                {},
+                True,
+            ),
+            (
+                [("getitem", (slice(0, -1),)), ("getitem", (-1,)), ("getattr", ("abc",)), ("abs",)],
+                ([1, 2, SimpleNamespace(abc=-10), 3],),
+                {},
+                10,
+            ),
+            (
+                [("getattr", ("abc",)), ("setattr", (["xyz"],))],
+                (SimpleNamespace(abc=SimpleNamespace()), (mk := Mock())),
+                {},
+                SimpleNamespace(abc=SimpleNamespace(xyz=mk)),
+            ),
+            (
+                [
+                    ("call", ([*map(Mock, range(3))], dict(zip("abc", map(Mock, repeat(str)))))),
+                    ("call",),
+                ],
+                (Mock(return_value=(mk := Mock())), *map(Mock, range(3))),
+                dict(zip("xyz", map(Mock, repeat(str)))),
+                mk.return_value,
+            ),
+        ],
+    )
+    def test_eager(self, ops, args, kwds, expected):
+        _bl = ("", (), {})
+        sub = Composition(operation(n, *a, **kw) for n, a, kw in (v + _bl[len(v) :] for v in ops))
+        src = args[0] if args else None
+        print("", str(sub), repr(sub), "\n")
+
+        assert isinstance(sub, Composition)
+
+        d_path, d_args, d_kwds = sub.deconstruct()
+        assert sub == copy(sub) == try_import(d_path)(*d_args, **d_kwds)
+        dcp = deepcopy(sub)
+        obj = sub(*args, **kwds)
+        if sub.isterminal:
+            assert obj is None
+            obj = src
+
+        assert obj == expected
+
+        if sub.inplace:
+            immutable = isinstance(input, str | int | float | tuple)
+            assert (immutable and src != obj) or (not immutable and src is obj)
+
+
+class test_trap:
+    @pyt.mark.parametrize(
+        "op_name",
+        [*_builtin_ops],
+    )
+    def test_eager(self, op_name):
+        op = operators[op_name]
+        if not op.trap:
+            pyt.skip(f"Operator {op!s} not trappable")
+        src_ops = [operators.getattr("abc"), operators.getitem(123)]
+        src = trap(*src_ops)
+
+        args = tuple(f"var_{i}" for i in range(+op.type - 1))
+        sub = getattr(trap, op.trap_name)(src, *args)
+        print("", str(sub), repr(sub), "\n")
+        assert isinstance(sub, trap)
+
+        obj = sub.__compose__()
+        assert isinstance(obj, Composition)
+        *base, tip = obj
+        assert Composition(base) == src.__compose__()
+        assert isinstance(tip, op.impl)
+
+        match op.type:
+            case OperationType.UNARY:
+                assert not args
+            case OperationType.BINARY:
+                assert not isinstance(tip, BinaryOperation) or (tip.operant,) == args
+            case OperationType.TERNARY:
+                assert not isinstance(tip, TernaryOperation) or tip.operants == args
+            case OperationType.GENERIC:
+                assert not isinstance(tip, GenericOperation) or tip.args == args
+
+        if op.reverse and op.reverse_trap_name:
+            rev = getattr(trap, op.reverse_trap_name)(src, *args)
+            assert rev.__compose__()[0] == tip.__compose__()
+
+    @pyt.mark.parametrize(
+        "op_name",
+        [*_builtin_ops],
+    )
+    def test_lazy(self, op_name):
+        op = operators[op_name]
+        if not op.trap:
+            pyt.skip(f"Operator {op!s} not trappable")
+        src_ops = [operators.getattr("abc"), operators.getitem(123)]
+        src = trap(*src_ops)
+        args = tuple(Ref(f"var_{i}") for i in range(+op.type - 1))
+        sub = getattr(trap, op.trap_name)(src, *args)
+
+        print("", str(sub), repr(sub), "\n")
+        assert isinstance(sub, trap)
+
+        obj = sub.__compose__()
+        assert op.type == UNARY_OP or isinstance(obj, op.lazy_impl)
+        tip = obj
+
+        match op.type:
+            case OperationType.UNARY:
+                assert not args
+            case OperationType.BINARY:
+                assert not isinstance(tip, LazyBinaryOperation) or (tip.operant,) == args
+            case OperationType.TERNARY:
+                assert not isinstance(tip, LazyTernaryOperation) or tip.operants == args
+            case OperationType.GENERIC:
+                assert not isinstance(tip, LazyGenericOperation) or tip.args == args
+
+        if op.reverse and op.reverse_trap_name:
+            rev = getattr(trap, op.reverse_trap_name)(src, *args)
+            # assert rev.__compose__() == tip.__compose__()

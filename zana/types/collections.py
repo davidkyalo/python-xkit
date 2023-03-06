@@ -14,6 +14,8 @@ _T = t.TypeVar("_T")
 _FT = t.TypeVar("_FT")
 _KT = t.TypeVar("_KT", bound=abc.Hashable)
 _VT = t.TypeVar("_VT")
+_KT2 = t.TypeVar("_KT2", bound=abc.Hashable)
+_VT2 = t.TypeVar("_VT2")
 _RT = t.TypeVar("_RT")
 _T_Str = t.TypeVar("_T_Str", bound=str)
 
@@ -214,7 +216,7 @@ class ReadonlyDict(ReadonlyMapping[_KT, _VT] if t.TYPE_CHECKING else dict[_KT, _
 
     __or = dict[_KT, _VT].__or__
 
-    def __or__(self, o):
+    def __or__(self, o: abc.Mapping[_KT2, _VT2]) -> "ReadonlyDict[_KT|_KT2, _VT | _VT2]":
         return self.__class__(self.__or(o))
 
 

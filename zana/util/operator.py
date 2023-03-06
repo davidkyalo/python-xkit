@@ -180,6 +180,11 @@ def noop(obj: Self = None, /, *a, **kw) -> _T_Co:
 noop = identity
 
 
+def none(obj=None, /, *a, **kw):
+    """Returns `None` whenever called."""
+    return None
+
+
 def finalize(
     obj: abc.Callable[_P, _R],
     finalizer: abc.Callable,
