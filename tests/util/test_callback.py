@@ -1,8 +1,5 @@
 from copy import copy, deepcopy
-from itertools import chain, repeat
-from operator import attrgetter, itemgetter
-from types import SimpleNamespace
-from unittest.mock import CallableMixin, Mock
+from unittest.mock import Mock
 
 import pytest
 

@@ -313,7 +313,7 @@ if not t.TYPE_CHECKING:
 
 @_attr_define(slots=True, weakref_slot=True, hash=True)
 class callback(t.Generic[_P, _R]):
-    func: abc.Callable[_P, _R] = attr.field(validator=attr.validators.is_callable())
+    func: abc.Callable[_P, _R] = attr.field(default=call, validator=attr.validators.is_callable())
     args: tuple = attr.field(default=(), converter=tuple)
     kwargs: dict = attr.field(factory=_frozen_dict, converter=_frozen_dict)
 
@@ -325,7 +325,7 @@ class callback(t.Generic[_P, _R]):
         return self
 
     def __call__(self, /, *args: _P.args, **kwargs: _P.kwargs):
-        return self.func(*self.args, *args, **self.kwargs | kwargs)
+        return self.func(*args, *self.args, **self.kwargs | kwargs)
 
     def __reduce__(self):
         if kwargs := self.kwargs:
@@ -342,12 +342,6 @@ class callback(t.Generic[_P, _R]):
             [self.func, *self.args],
             self.kwargs,
         )
-
-
-@_attr_define(slots=True, weakref_slot=True, hash=True)
-class boundcallback(callback[_P, _R]):
-    def __call__(self, obj, /, *args: _P.args, **kwargs: _P.kwargs):
-        return self.func(obj, *self.args, *args, **self.kwargs | kwargs)
 
 
 @_attr_define(slots=True, weakref_slot=True, hash=True)
