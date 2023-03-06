@@ -16,14 +16,14 @@ from zana.types.collections import Composite, FallbackDict, FrozenDict, UserTupl
 from zana.types.enums import IntEnum
 from zana.util import operator
 
-__all__ = [
-    "Operation",
-    "operators",
-    "compose",
-    "trap",
-    "operation",
-    "Composition",
-]
+# __all__ = [
+#     "Operation",
+#     "operators",
+#     "compose",
+#     "trap",
+#     "operation",
+#     "Composition",
+# ]
 
 _T = t.TypeVar("_T")
 _T_Co = t.TypeVar("_T_Co", covariant=True)
@@ -105,8 +105,6 @@ def maybe_composable(obj) -> "Operation":
 def ensure_composable(obj) -> "Operation":
     if isinstance(obj, Composable):
         return obj.__compose__()
-    elif callable(obj):
-        return +Callback(obj)
     else:
         return +Ref(obj)
 
@@ -142,18 +140,11 @@ class Operation(t.Generic[_T_Co]):
 
     lazy: t.ClassVar[bool] = False
     operator: t.ClassVar["OperatorInfo[Self]"] = None
-    callback: t.ClassVar[abc.Callable] = None
+    function: t.ClassVar[abc.Callable] = None
     __abstract__: t.ClassVar[abc.Callable] = True
     __final__: t.ClassVar[abc.Callable] = False
     isterminal: t.ClassVar[bool] = False
     inplace: t.ClassVar[bool] = False
-
-    # callback: t.ClassVar[abc.Callable] = attr.ib(
-    #     init=False,
-    #     cmp=False,
-    #     repr=False,
-    #     default=attr.Factory(attrgetter("operator.callback"), True),
-    # )
 
     @property
     def name(self):
@@ -168,10 +159,6 @@ class Operation(t.Generic[_T_Co]):
 
     def __compose__(self) -> "Operation[_T_Co]":
         return +self
-
-    # @property
-    # def atomic(self) -> tuple[Self, ...]:
-    #     return (self,)
 
     @abstractmethod
     def __call__(self, *a, **kw) -> _T_Co:
@@ -245,7 +232,7 @@ class UnaryOperation(Operation[_T_Co]):
     __abstract__ = True
 
     def __call__(self, obj, /):
-        return self.callback(obj)
+        return self.function(obj)
 
 
 @_define()
@@ -254,7 +241,7 @@ class BinaryOperation(Operation[_T_Co]):
     operant: t.Any = attr.ib()
 
     def __call__(self, obj, /):
-        return self.callback(obj, self.operant)
+        return self.function(obj, self.operant)
 
 
 @_define()
@@ -263,7 +250,7 @@ class TernaryOperation(Operation[_T_Co]):
     operants: tuple[t.Any] = attr.ib(converter=tuple, validator=attr.validators.max_len(2))
 
     def __call__(self, obj, /, *args):
-        return self.callback(obj, *self.operants, *args)
+        return self.function(obj, *self.operants, *args)
 
 
 @_define()
@@ -278,7 +265,7 @@ class GenericOperation(Operation[_T_Co]):
             bind, args = a[:bind], self.args + a[bind:]
         else:
             args = chain(self.args, a)
-        return self.callback(*bind, *args, **self.kwargs | kw)
+        return self.function(*bind, *args, **self.kwargs | kw)
 
 
 @_define()
@@ -287,7 +274,7 @@ class LazyUnaryOperation(LazyOperation[_T_Co]):
     source: Operation = attr.ib()
 
     def __call__(self, obj, /):
-        return self.callback(self.source(obj))
+        return self.function(self.source(obj))
 
 
 @_define()
@@ -297,7 +284,7 @@ class LazyBinaryOperation(LazyOperation[_T_Co]):
     operant: Operation = attr.ib()
 
     def __call__(self, obj, /):
-        return self.callback(self.source(obj), self.operant(obj))
+        return self.function(self.source(obj), self.operant(obj))
 
 
 @_define()
@@ -307,7 +294,7 @@ class LazyTernaryOperation(LazyOperation[_T_Co]):
     operants: tuple[t.Any] = attr.ib(converter=tuple, validator=attr.validators.max_len(2))
 
     def __call__(self, obj, /, *args):
-        return self.callback(self.source(obj), *(op(obj) for op in self.operants), *args)
+        return self.function(self.source(obj), *(op(obj) for op in self.operants), *args)
 
 
 @_define()
@@ -326,7 +313,7 @@ class LazyGenericOperation(LazyOperation[_T_Co]):
             args = chain(args, (src,), a)
 
         kwargs = {k: op(obj) for k, op in self.kwargs.items() if k not in kw}
-        return self.callback(*bind, *args, **kwargs, **kw)
+        return self.function(*bind, *args, **kwargs, **kw)
 
 
 @_define
@@ -377,248 +364,6 @@ class LazyIdentity(LazyUnaryOperation[_T_Co]):
 
     def __call__(self, obj: _T_Co, /) -> _T_Co:
         return self.source(obj)
-
-
-if True:
-
-    class AttrPath(UserTuple[str]):
-        __slots__ = ()
-
-        def __new__(cls: type[Self], path: abc.Iterable[str] = ()) -> Self:
-            if path.__class__ is cls:
-                return path
-            elif isinstance(path, str):
-                it = path.split(".")
-            else:
-                it = (
-                    at
-                    for it in (path or ())
-                    for at in (it.split(".") if isinstance(it, str) else (it,))
-                )
-            return cls.construct(it)
-
-        def __str__(self) -> str:
-            return ".".join(map(str, self))
-
-    @_define()
-    class Attr(BinaryOperation[_T_Co]):
-        path: AttrPath = attr.ib(converter=AttrPath, repr=_repr_str)
-
-        def __str__(self) -> str:
-            return f".{self.path}"
-
-        def __call__(self, obj) -> _T_Co:
-            __tracebackhide__ = True
-            try:
-                for name in self.path:
-                    obj = getattr(obj, name)
-                return obj
-            except AttributeError as e:
-                raise AttributeSignatureError(self) from e
-
-        def set(self, obj, val):
-            __tracebackhide__ = True
-            path = self.path
-            try:
-                for name in path[:-1]:
-                    obj = getattr(obj, name)
-                setattr(obj, path[-1], val)
-            except AttributeError as e:
-                raise AttributeSignatureError(self) from e
-
-        def delete(self, obj):
-            __tracebackhide__ = True
-            path = self.path
-            try:
-                for name in path[:-1]:
-                    obj = getattr(obj, name)
-                delattr(obj, path[-1])
-            except AttributeError as e:
-                raise AttributeSignatureError(self) from e
-
-        def __add__(self, o: Self):
-            if not self.__class__ is o.__class__:
-                return NotImplemented
-            lhs, rhs = self.path, o.path
-            path = lhs + rhs
-            return self.evolve(path)
-
-    # @_define()
-    # class AttrMutator(Signature[_T_Co]):
-    #     name: str = attr.ib()
-    #     source: Attr = attr.ib(default=None, repr=str)
-
-    #     def __str__(self) -> str:
-    #         return f".{'.'.join(map(str, filter(None, (self.source, self.name))))}"
-
-    #     def resolve(self, obj):
-    #         return obj
-
-    #     def __attrs_post_init__(self):
-    #         if (src := self.source) is not None:
-    #             self.__dict__.setdefault('resolve', src)
-
-    #     # def __add__(self, o: Self):
-    #     #     if not self.__class__ is o.__class__:
-    #     #         return NotImplemented
-    #     #     lhs, rhs = self.path, o.path
-    #     #     path = lhs + rhs
-    #     #     return self.evolve(path)
-
-    # @_define()
-    # class AttrGetter(AttrMutator[_T_Co]):
-    #     def __call__(self, obj) -> _T_Co:
-    #         __tracebackhide__ = True
-    #         src = self.resolve(obj)
-    #         try:
-    #             return getattr(src, self.name)
-    #         except AttributeError as e:
-    #             raise AttributeSignatureError(self) from e
-
-    # @_define()
-    # class AttrSetter(AttrMutator[_T_Co]):
-    #     def __call__(self, obj, value) -> _T_Co:
-    #         __tracebackhide__ = True
-
-    #         src = self.source
-    #         src = src and src(obj)
-
-    #         try:
-    #             return getattr(src, self.name)
-    #         except AttributeError as e:
-    #             raise AttributeSignatureError(self) from e
-
-    # @_define()
-    # class AttrDeleter(AttrMutator[_T_Co]):
-    #     def __call__(self, obj) -> _T_Co:
-    #         __tracebackhide__ = True
-    #         path, name = self.path, self.name
-    #         try:
-    #             for name in path:
-    #                 obj = getattr(obj, name)
-    #             delattr(obj, name)
-    #         except AttributeError as e:
-    #             raise AttributeSignatureError(self) from e
-
-    _lookup_errors = {
-        LookupError: LookupSignatureError,
-        KeyError: KeySignatureError,
-        IndexError: IndexSignatureError,
-    }
-
-    class SubscriptPath(UserTuple[_T_Key]):
-        __slots__ = ()
-
-        def __str__(self) -> str:
-            return f"[{']['.join(map(str, self))}]"
-
-    class _SubscriptMixin:
-        path: tuple[_T_Key]
-
-        def __str__(self) -> str:
-            return f"{self.path}"
-
-        def __call__(self, obj) -> _T_Co:
-            __tracebackhide__ = True
-            try:
-                for arg in self.path:
-                    obj = obj[arg]
-                return obj
-            except LookupError as e:
-                raise _lookup_errors.get(e.__class__)(self) from e
-
-        def set(self, obj, val):
-            __tracebackhide__ = True
-            args = self.path
-            try:
-                for arg in args[:-1]:
-                    obj = obj[arg]
-                obj[args[-1]] = val
-            except LookupError as e:
-                raise _lookup_errors.get(e.__class__)(self) from e
-
-        def delete(self, obj):
-            __tracebackhide__ = True
-            args = self.path
-            try:
-                for arg in args[:-1]:
-                    obj = obj[arg]
-                del obj[args[-1]]
-            except LookupError as e:
-                raise _lookup_errors.get(e.__class__)(self) from e
-
-        def __add__(self, o: Self):
-            if not self.__class__ is o.__class__:
-                return NotImplemented
-            lhs, rhs = self.path, o.path
-            path = lhs + rhs
-            return self.evolve(path)
-
-    @_define()
-    class Subscript(_SubscriptMixin, Operation[_T_Co]):
-        path: SubscriptPath = attr.ib(converter=SubscriptPath, repr=_repr_str)
-
-    _slice_tuple = attrgetter("start", "stop", "step")
-
-    def _to_slice(val):
-        __tracebackhide__ = True
-        return val if isinstance(val, slice) else slice(*val)
-
-    class SlicePath(UserTuple[slice]):
-        __slots__ = ()
-
-        def __new__(cls: type[Self], path: abc.Iterable[str] = ()) -> Self:
-            if path.__class__ is cls:
-                return path
-            return cls.construct(map(_to_slice, path))
-
-        def __str__(self) -> str:
-            return "".join(f"[{s.start}:{s.stop}:{s.step}]".replace("None", "") for s in self)
-
-        def astuples(self):
-            return tuple(map(_slice_tuple, self))
-
-    @_define()
-    class Slice(Subscript[_T_Co]):
-        path: SlicePath = attr.ib(converter=SlicePath, repr=_repr_str, cmp=False)
-        raw_path: tuple[tuple[_T_Key, _T_Key, _T_Key]] = attr.ib(init=False, repr=False, cmp=True)
-
-        @raw_path.default
-        def _init_raw_path(self):
-            return self.path.astuples()
-
-        def deconstruct(self):
-            path, args, kwargs = super().deconstruct()
-            return path, [self.raw_path], {}
-
-    @_define()
-    class Call(Operation[_T_Co]):
-        args: tuple[t.Any] = attr.ib(default=(), converter=tuple)
-        kwargs: FrozenDict[str, t.Any] = attr.ib(default=FrozenDict(), converter=FrozenDict)
-
-        def __str__(self) -> str:
-            params = map(repr, self.args), (f"{k}={v!r}" for k, v in self.kwargs.items())
-            return f"({', '.join(p for ps in params for p in ps)})"
-
-        def __call__(this, self, /, *a, **kw) -> _T_Co:
-            return self(*this.args, *a, **this.kwargs | kw)
-
-    @_define()
-    class Callback(Operation[_T_Co]):
-        func: abc.Callable = attr.ib()
-        args: tuple[t.Any] = attr.ib(default=(), converter=tuple)
-        kwargs: FrozenDict[str, t.Any] = attr.ib(default=FrozenDict(), converter=FrozenDict)
-
-        @property
-        def __wrapped__(self):
-            return self.func
-
-        def __str__(self) -> str:
-            params = map(repr, self.args), (f"{k}={v!r}" for k, v in self.kwargs.items())
-            return f"{self.func.__name__}({', '.join(p for ps in params for p in ps)})"
-
-        def __call__(self, /, *a, **kw):
-            return self.func(*self.args, *a, **self.kwargs | kw)
 
 
 def _iter_compose(seq: abc.Iterable[Operation], composites: type[abc.Iterable[Operation]]):
@@ -848,7 +593,7 @@ class OperatorInfo(t.Generic[_T_Op]):
         cmp=False,
         repr=attr.converters.pipe(attrgetter("name"), repr),
     )
-    callback: abc.Callable = attr.ib(
+    function: abc.Callable = attr.ib(
         cmp=False,
         validator=attr.validators.optional(attr.validators.is_callable()),
         repr=attr.converters.pipe(attrgetter("__name__"), repr),
@@ -919,7 +664,7 @@ class OperatorInfo(t.Generic[_T_Op]):
                 name = f"{name}_"
             return name
 
-    @callback.default
+    @function.default
     def _init_callback(self):
         name = self.identifier or self.name
         for mod in _operator_modules:
@@ -960,14 +705,14 @@ class OperatorInfo(t.Generic[_T_Op]):
             return self.make_impl_class(base)
 
     def make_impl_class(self, base: t.Type[_T_Op]):
-        callback, isterminal, inplace = staticmethod(self.callback), self.isterminal, self.inplace
+        function, isterminal, inplace = staticmethod(self.function), self.isterminal, self.inplace
         if base.__final__:
             assert base.operator is None
             assert isterminal or not base.isterminal
             assert inplace or not base.inplace
-            base.operator, base.callback, base.isterminal, base.inplace = (
+            base.operator, base.function, base.isterminal, base.inplace = (
                 self,
-                base.callback or callback,
+                base.function or function,
                 isterminal,
                 inplace,
             )
@@ -976,7 +721,7 @@ class OperatorInfo(t.Generic[_T_Op]):
         name = f"{self.identifier or base.__name__}_{'lazy_' if base.lazy else ''}operation"
         name = "".join(map(methodcaller("capitalize"), name.split("_")))
         if getattr(base.__call__, "__isabstractmethod__", False):
-            __call__ = callback
+            __call__ = function
         else:
             __call__ = base.__call__
 
@@ -988,7 +733,7 @@ class OperatorInfo(t.Generic[_T_Op]):
             "__final__": True,
             "__call__": __call__,
             "operator": self,
-            "callback": callback,
+            "function": function,
             "isterminal": isterminal,
             "inplace": inplace,
         }

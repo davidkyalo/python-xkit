@@ -10,7 +10,7 @@ attr_str = (
 for i, op in enumerate(operators.values(), 1):
     o, l = op.impl, op.lazy_impl
     print(
-        f" - {i:3} : {op.name:16} {op.type.name:8} --> '{op.callback.__module__.lstrip('_')}.{op.callback.__name__}'",
+        f" - {i:3} : {op.name:16} {op.type.name:8} --> '{op.function.__module__.lstrip('_')}.{op.function.__name__}'",
         f" -> EAGER: {o.__name__:16} {o.lazy = !s:6}",
         *(
             f"   - {f.name:16}: {f.init = !s:6} {f.kw_only = !s:6} {f.inherited = !s:6} {f.default=}"
