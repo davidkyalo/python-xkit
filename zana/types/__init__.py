@@ -2,6 +2,7 @@ import typing as t
 from abc import ABC, abstractmethod
 from collections import abc
 from functools import reduce
+from importlib import import_module
 from operator import or_
 
 from typing_extensions import Self
@@ -72,25 +73,59 @@ class Interface(ABC):
             predicate = implements_any if total is False else implements
             expected = False if inverse else True
             d_type = abc.Callable | Descriptor
+            f_members = f_parents = f_check = f_forbidden = lambda: None
+
+            _module = None
+
+            def mod():
+                nonlocal _module
+                if _module is None:
+                    _module = import_module(cls.__module__)
+                return vars(_module)
+
+            _refs = {}
+            fwd = (
+                lambda v: v
+                if not isinstance(v, str)
+                else _refs[v]
+                if v in _refs
+                else _refs.setdefault(v, g[v])
+                if v in (g := mod())
+                else v
+            )
+
             if check is True or check is None:
-                check = d_type
-            elif not strict:
-                check = reduce(or_, check if isinstance(check, abc.Sequence) else (check,), d_type)
+                f_check = lambda: d_type
+            else:
+                init = () if strict else (d_type,)
+                f_check = lambda: reduce(
+                    or_, v if isinstance(v := fwd(check), abc.Sequence) else (v,), *init
+                )
 
             if members is not None:
-                members = tuple(members)
+                f_members = lambda: tuple(fwd(members))
 
             if parents is not None:
                 if not isinstance(parents, (list | tuple)):
-                    parents = (parents,)
+                    f_parents = lambda: (fwd(parents),)
+                else:
+                    f_parents = lambda: parents
 
             if forbidden is not None:
                 if not isinstance(forbidden, (list | tuple)):
-                    forbidden = (forbidden,)
+                    f_forbidden = lambda: (fwd(forbidden),)
+                else:
+                    f_forbidden = lambda: forbidden
 
             @classmethod
             def __subclasshook__(self, sub: type[Self]):
                 if self is cls:
+                    parents, forbidden, check, members = (
+                        f_parents(),
+                        f_forbidden(),
+                        f_check(),
+                        f_members(),
+                    )
                     names = self.__abstractmethods__ if members is None else members
                     print(
                         f"issubclass({sub.__name__},  {cls.__name__}) {parents = }, {forbidden = }\n -->"
@@ -100,7 +135,7 @@ class Interface(ABC):
                     )
 
                     if parents and any(not issubclass(sub, p) for p in parents):
-                        return NotImplemented
+                        return False
 
                     if forbidden and any(issubclass(sub, p) for p in forbidden):
                         return NotImplemented
