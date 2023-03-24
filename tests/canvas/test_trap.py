@@ -13,7 +13,7 @@ from zana.canvas.nodes import (
     Ref,
     VariantOpExpression,
     _builtin_ops,
-    ensure_expr,
+    to_expr,
     trap,
 )
 from zana.testing.mock import StaticMock
@@ -30,7 +30,7 @@ class test_trap:
         is_lazy, is_root = expr_mode == "lazy", expr_type == "root"
         src = None if is_root else StaticMock()
         obj = trap(*([] if src is None else [src]))
-        assert not obj if is_root else ensure_expr(src) == obj.__expr__()
+        assert not obj if is_root else to_expr(src) == obj.__expr__()
 
         args = tuple(f"var_{i}" for i in range(+op.type - 1))
         if is_lazy:
@@ -63,5 +63,5 @@ class test_trap:
             sub_r = rmethod(obj)
             exp_r: BinaryOpExpression = sub_r.__expr__()
             assert isinstance(exp, AbcLazyExpr)
-            assert exp_r.source == ensure_expr(exp.operant)
+            assert exp_r.source == to_expr(exp.operant)
             assert exp.source is None if is_root else exp_r.operant == exp.source

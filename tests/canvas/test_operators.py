@@ -8,8 +8,20 @@ from unittest.mock import Mock
 
 import pytest as pyt
 
-from zana.canvas.nodes import Expression, Identity, OperatorInfo, OpType, ensure_expr
-from zana.testing.mock import StaticMock
+from zana.canvas.nodes import (
+    AbcNestedExpr,
+    AbcNestedLazyExpr,
+    AbcRootExpr,
+    AbcRootLazyExpr,
+    Expression,
+    Identity,
+    OperatorInfo,
+    OpType,
+    Ref,
+    Return,
+    to_expr,
+)
+from zana.testing.mock import StaticMagicMock, StaticMock
 from zana.util import try_import
 
 
@@ -39,16 +51,96 @@ def expr_args(op_params: tuple, op: OperatorInfo, expr_mode):
         case (OpType.BINARY, False) | (OpType.VARIANT, False):
             return tuple(op_params[1:2])
         case (OpType.BINARY, True):
-            return tuple(map(ensure_expr, op_params[1:2]))
+            return tuple(map(to_expr, op_params[1:2]))
         case (OpType.VARIANT, True):
-            return tuple(tuple(map(ensure_expr, it)) for it in op_params[1:2])
+            return tuple(tuple(map(to_expr, it)) for it in op_params[1:2])
         case (OpType.GENERIC, False):
             return tuple(op_params[1:3])
         case (OpType.GENERIC, True):
             args, kwargs = op_params[1:3]
-            return tuple(map(ensure_expr, args)), dict(
-                zip(kwargs, map(ensure_expr, kwargs.values()))
-            )
+            return tuple(map(to_expr, args)), dict(zip(kwargs, map(to_expr, kwargs.values())))
+
+
+class test_Identity:
+    def test(self):
+        obj = Identity()
+        mk = StaticMock()
+        other = StaticMock(Expression)
+
+        assert obj.is_root is True
+        assert obj.lazy is False
+
+        assert isinstance(obj, AbcRootExpr)
+        assert not isinstance(obj, AbcNestedExpr | AbcNestedLazyExpr | AbcRootLazyExpr)
+
+        cp, dcp = copy(obj), deepcopy(obj)
+        assert obj == cp == dcp
+        assert obj(mk) is mk
+        assert obj | other is other
+        assert other | obj is other
+
+        with pyt.raises(TypeError):
+            obj | StaticMock()
+
+
+#
+
+
+class test_Ref:
+    def test(self):
+        mk = StaticMock()
+        obj = Ref(mk)
+        other_e, other_o = StaticMock(Expression), StaticMock(Ref)
+
+        assert obj.is_root is True
+        assert obj.lazy is False
+
+        assert isinstance(obj, AbcRootExpr)
+        assert not isinstance(obj, AbcNestedExpr | AbcNestedLazyExpr | AbcRootLazyExpr)
+
+        cp, dcp = copy(obj), deepcopy(obj)
+        assert obj == cp == dcp
+        assert obj(Mock()) is mk is obj()
+        assert obj | other_e is other_e.lift.return_value
+        assert other_e | obj is obj
+        assert other_o | obj is obj
+
+        other_e.lift.assert_called_once_with(obj)
+
+
+class test_Return:
+    def test(self):
+        mk, mk_src = StaticMock(), StaticMock(Expression)
+        obj = Return(mk)
+        arg = Mock()
+        other_e, other_or, other_on = StaticMock(Expression), StaticMock(Return), StaticMock(Return)
+        other_or.is_root = True
+        other_on.is_root = False
+        other_on.source = mk_src
+
+        assert obj.is_root is True
+        assert obj.lazy is False
+
+        assert isinstance(obj, AbcRootExpr | AbcNestedExpr)
+        assert not isinstance(obj, AbcNestedLazyExpr | AbcRootLazyExpr)
+
+        cp, dcp = copy(obj), deepcopy(obj)
+        assert obj == cp == dcp
+        assert obj(arg) is mk is obj()
+
+        assert Ref(678) | obj is obj
+        assert other_or | obj is obj
+        assert obj | other_e is other_e.lift.return_value
+        other_e.lift.assert_called_once_with(obj)
+
+        nested = other_e | obj
+        assert nested(arg) is mk
+        other_e.assert_called_once_with(arg)
+
+        d_nested = other_on | obj
+        assert d_nested(arg) is mk
+        mk_src.assert_called_once_with(arg)
+        assert d_nested() is mk
 
 
 #
