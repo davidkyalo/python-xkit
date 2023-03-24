@@ -517,7 +517,7 @@ class Composition(Operation, abc.Sequence[Operation]):
         return path, list(self), {}
 
 
-class Composable(Interface, t.Generic[_T_Co], parents=Operation):
+class Composable(Interface, t.Generic[_T_Co], parent=Operation):
     __slots__ = ()
 
     @abstractmethod

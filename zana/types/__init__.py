@@ -3,13 +3,17 @@ from abc import ABC, abstractmethod
 from collections import abc
 from functools import reduce
 from importlib import import_module
+from logging import getLogger
 from operator import or_
+from types import GenericAlias
 
 from typing_extensions import Self
 
 _T = t.TypeVar("_T")
 _RT = t.TypeVar("_RT")
 _empty = object()
+
+logger = getLogger(__name__)
 
 
 def iter_implementations(cls: type, methods: abc.Iterable[str], type: tuple[type] | type = None):
@@ -58,19 +62,23 @@ class Intersect:
 
 
 class Interface(ABC):
+    __class_getitem__ = classmethod(GenericAlias)
+
     def __init_subclass__(
         cls,
         total: bool = None,
         members: abc.Iterable[str] = None,
         check: tuple[type] | type | bool = None,
-        parents: tuple[type] | type = None,
+        parent: tuple[type] | type = None,
         forbidden: tuple[type] | type = None,
         inverse: bool = None,
         strict: bool = None,
+        predicate=None,
     ) -> None:
         super().__init_subclass__()
         if "__subclasshook__" not in cls.__dict__ and check is not False:
-            predicate = implements_any if total is False else implements
+            if predicate is None:
+                predicate = implements_any if total is False else implements
             expected = False if inverse else True
             d_type = abc.Callable | Descriptor
             f_members = f_parents = f_check = f_forbidden = lambda: None
@@ -105,11 +113,12 @@ class Interface(ABC):
             if members is not None:
                 f_members = lambda: tuple(fwd(members))
 
-            if parents is not None:
-                if not isinstance(parents, (list | tuple)):
-                    f_parents = lambda: (fwd(parents),)
-                else:
-                    f_parents = lambda: parents
+            if parent is None:
+                f_parents = lambda: ()
+            elif isinstance(parent, (list | tuple)):
+                f_parents = lambda: [fwd(p) for p in parent]
+            else:
+                f_parents = lambda: (fwd(parent),)
 
             if forbidden is not None:
                 if not isinstance(forbidden, (list | tuple)):
@@ -127,21 +136,18 @@ class Interface(ABC):
                         f_members(),
                     )
                     names = self.__abstractmethods__ if members is None else members
-                    print(
+                    msg = (
                         f"issubclass({sub.__name__},  {cls.__name__}) {parents = }, {forbidden = }\n -->"
                         f""
                         f"{predicate.__name__}({sub.__name__}, {[*names]}, {check}) is "
                         f"{expected} = {predicate(sub, names, check) is expected}\n"
                     )
+                    logger.error(msg)
 
-                    if parents and any(not issubclass(sub, p) for p in parents):
-                        return False
-
-                    if forbidden and any(issubclass(sub, p) for p in forbidden):
-                        return NotImplemented
-
-                    if names and predicate(sub, names, check) is expected:
-                        return True
+                    if all(issubclass(sub, p) for p in parents):
+                        if not (forbidden and issubclass(sub, forbidden)):
+                            if predicate(sub, names, check) is expected:
+                                return True
                 return NotImplemented
 
             cls.__subclasshook__ = __subclasshook__

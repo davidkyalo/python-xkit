@@ -3,6 +3,7 @@ from collections import abc
 from functools import reduce
 from importlib import import_module
 from threading import RLock
+from unittest import skip
 
 from typing_extensions import ParamSpec, Self
 
@@ -83,6 +84,17 @@ def _dictpop(self, obj: object):
         pass
 
 
+def subclasses(*bases: type[_T], inclusive: bool = True, depth: int = -1, __skip=None, __lvl=0):
+    """ """
+    __skip = set() if __skip is None else __skip
+    kwds = {"depth": depth, "__lvl": __lvl + 1, "__skip": __skip}
+    for base in bases:
+        if not (inclusive is False or base in __skip or __skip.add(base)):
+            yield base
+        if depth - __lvl:
+            yield from subclasses(*base.__subclasses__(), **kwds)
+
+
 class class_property(t.Generic[_R]):
     attrname: str = None
 
@@ -96,10 +108,10 @@ class class_property(t.Generic[_R]):
         self.__fget__ = getter
 
         if getter:
-            info = getter
-            self.__doc__ = info.__doc__
-            self.__name__ = info.__name__
-            self.__module__ = info.__module__
+            if hasattr(getter, "__name__"):
+                self.__doc__ = getter.__doc__
+                self.__name__ = getter.__name__
+                self.__module__ = getter.__module__
 
     def __set_name__(self, owner: type, name: str):
         if self.attrname is None:
