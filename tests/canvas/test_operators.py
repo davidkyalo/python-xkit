@@ -21,7 +21,7 @@ from zana.canvas.nodes import (
     Return,
     to_expr,
 )
-from zana.testing.mock import StaticMagicMock, StaticMock
+from zana.testing.mock import StaticMock
 from zana.util import try_import
 
 
