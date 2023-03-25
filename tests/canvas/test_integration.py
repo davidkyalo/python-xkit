@@ -1,6 +1,6 @@
 from copy import copy, deepcopy
 
-from zana.canvas.nodes import Ref, compose, magic, operators
+from zana.canvas import Ref, compose, magic, operators
 from zana.testing.mock import StaticMagicMock, StaticMock, StaticPropertyMock
 
 

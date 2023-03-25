@@ -9,7 +9,7 @@ from unittest.mock import Mock
 
 import pytest as pyt
 
-from zana.canvas.nodes import (
+from zana.canvas import (
     AbcNestedClosure,
     AbcNestedLazyClosure,
     AbcRootClosure,

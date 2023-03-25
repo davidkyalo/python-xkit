@@ -1,20 +1,23 @@
 import keyword
-import operator as builtin_operator
+import operator as py_operator
 import typing as t
 from abc import abstractmethod
 from collections import abc
+from copy import deepcopy
+from functools import cache, reduce, update_wrapper
 from itertools import chain
 from logging import getLogger
 from operator import attrgetter, methodcaller
-from types import GenericAlias, new_class
+from types import FunctionType, GenericAlias, new_class
 
 import attr
 from typing_extensions import Self
 
-from zana.types import Interface
+from zana.types import Descriptor, Interface
 from zana.types.collections import Composite, FallbackDict, FrozenDict, UserTuple
 from zana.types.enums import IntEnum
-from zana.util import operator
+from zana.util import class_property
+from zana.util import operator as zana_ops
 
 # __all__ = [
 #     "Operation",
@@ -34,16 +37,17 @@ _T_Kwarg = t.TypeVar("_T_Kwarg", bound=FrozenDict, covariant=True)
 _T_Key = t.TypeVar("_T_Key", slice, int, str, t.SupportsIndex, abc.Hashable)
 _T_Fn = t.TypeVar("_T_Fn", bound=abc.Callable)
 _T_Attr = t.TypeVar("_T_Attr", bound=str)
-_T_Op = t.TypeVar("_T_Op", bound="Operation", covariant=True)
+_T_Expr = t.TypeVar("_T_Expr", bound="Closure")
 
 
 logger = getLogger(__name__)
 _object_new = object.__new__
+_object_setattr = object.__setattr__
 _empty_dict = FrozenDict()
 
 _repr_str = attr.converters.pipe(str, repr)
 
-_operator_modules = (operator, builtin_operator)
+_operator_modules = (zana_ops, py_operator)
 
 _notset = t.TypeVar("_notset")
 
@@ -65,86 +69,130 @@ _define = t.overload(attr.s)
 
 if not t.TYPE_CHECKING:
 
-    def _define(*a, no_init=None, field_transformer=None, **kw):
+    def _define(*a, no_init=True, auto_attribs=False, field_transformer=None, **kw):
         return attr.define(
             *a,
             **dict(
                 frozen=True,
                 init=not no_init,
-                cache_hash=True,
+                # cache_hash=True,
+                auto_attribs=auto_attribs,
                 field_transformer=_field_transformer(field_transformer),
             )
             | kw,
         )
 
 
-class OperationType(IntEnum):
+def compose(obj=_notset, /, *args, **kwds) -> "Closure":
+    if not (args or kwds):
+        if obj is _notset:
+            return _IDENTITY
+        elif isinstance(obj, Composable):
+            return obj.__zana_compose__()
+        else:
+            return Ref(obj)
+    elif not kwds:
+        return tuple(compose(a) for it in ((obj,), args) for a in it)
+    elif not args and obj is _notset:
+        return {k: compose(v) for k, v in kwds.items()}
+    else:
+        raise TypeError(f"positional and keyword arguments are mutually exclusive.")
+
+
+# def compose(obj=_notset) -> "Closure":
+#     return obj.__compose__() if isinstance(obj, Composable) else Ref(obj)
+
+
+class OpType(IntEnum):
     UNARY = 1, "Unary (1 operant)"
     BINARY = 2, "Binary (2 operants)"
-    TERNARY = 3, "Ternary (3 operants)"
-    GENERIC = 5, "Generic (unknown operants)"
+    VARIANT = 3, "Variant (* operants)"
+    GENERIC = 4, "Generic (allow args and kwargs)"
+    _impl_map_: abc.Mapping[Self, type["Closure"]]
 
-    def __bool__(self) -> bool:
-        return True
+    @property
+    def implementation(self):
+        return self.__class__._impl_map_[self]
 
-
-UNARY_OP = OperationType.UNARY
-BINARY_OP = OperationType.BINARY
-TERNARY_OP = OperationType.TERNARY
-GENERIC_OP = OperationType.GENERIC
-
-
-def compose(*signatures: "Composable"):
-    return +Composition(map(ensure_composable, signatures))
+    def _register(self, impl):
+        assert impl is self.__class__._impl_map_.setdefault(self, impl)
+        return impl
 
 
-def maybe_composable(obj) -> "Operation":
-    return obj.__compose__() if isinstance(obj, Composable) else obj
+OpType._impl_map_ = {}
+
+UNARY_OP = OpType.UNARY
+BINARY_OP = OpType.BINARY
+VARIANT_OP = OpType.VARIANT
+GENERIC_OP = OpType.GENERIC
 
 
-def ensure_composable(obj) -> "Operation":
-    if isinstance(obj, Composable):
-        return obj.__compose__()
-    else:
-        return +Ref(obj)
+class AbcNestedClosure(Interface[_T_Co], parent="Closure"):
+    @abstractmethod
+    def __call_nested__(self, *a, **kw) -> _T_Co:
+        ...
 
 
-def operation(name: str, /, *args, **kwargs):
-    return ops[name](*args, **kwargs)
+class AbcNestedLazyClosure(Interface[_T_Co], parent="Closure"):
+    @abstractmethod
+    def __call_nested_lazy__(self, *a, **kw) -> _T_Co:
+        raise NotImplementedError
 
 
-class SignatureError(Exception):
-    pass
+class AbcRootClosure(Interface[_T_Co], parent="Closure"):
+    @abstractmethod
+    def __call_root__(self, *a, **kw) -> _T_Co:
+        raise NotImplementedError
 
 
-class AttributeSignatureError(SignatureError, AttributeError):
-    ...
+class AbcRootLazyClosure(Interface[_T_Co], parent="Closure"):
+    @abstractmethod
+    def __call_root_lazy__(self, *a, **kw) -> _T_Co:
+        ...
 
 
-class LookupSignatureError(SignatureError, LookupError):
-    ...
+class AbcLazyClosure(Interface[_T_Co], parent="Closure", total=False):
+    @abstractmethod
+    def __call_nested_lazy__(self, *a, **kw) -> _T_Co:
+        raise NotImplementedError
+
+    @abstractmethod
+    def __call_root_lazy__(self, *a, **kw) -> _T_Co:
+        ...
 
 
-class KeySignatureError(LookupSignatureError, KeyError):
-    ...
+class Composable(Interface, t.Generic[_T_Co], parent="Closure"):
+    __slots__ = ()
+
+    @abstractmethod
+    def __zana_compose__(self) -> "Closure[_T_Co]":
+        ...
 
 
-class IndexSignatureError(LookupSignatureError, IndexError):
-    ...
+class Closure(t.Generic[_T_Co]):
+    __slots__ = ()
 
-
-@_define()
-class Operation(t.Generic[_T_Co]):
     __class_getitem__ = classmethod(GenericAlias)
     __positional_attrs__: t.ClassVar[dict[str, str]] = ...
-
-    lazy: t.ClassVar[bool] = False
-    operator: t.ClassVar["OperatorInfo[Self]"] = None
+    __base__: t.ClassVar[type[Self]]
+    operator: t.ClassVar["OperatorInfo"] = None
     function: t.ClassVar[abc.Callable] = None
     __abstract__: t.ClassVar[abc.Callable] = True
     __final__: t.ClassVar[abc.Callable] = False
     isterminal: t.ClassVar[bool] = False
     inplace: t.ClassVar[bool] = False
+
+    is_root: t.ClassVar[bool] = False
+    lazy: t.ClassVar[bool] = False
+    source: t.ClassVar[Self | None] = None
+
+    __concrete__: t.ClassVar[type[Self]] = None
+    __overload__: t.ClassVar[bool] = False
+
+    _nested_type_: t.ClassVar[type[Self]] = None
+    _nested_lazy_type_: t.ClassVar[type[Self]] = None
+    _root_type_: t.ClassVar[type[Self]] = None
+    _root_lazy_type_: t.ClassVar[type[Self]] = None
 
     @property
     def name(self):
@@ -154,41 +202,131 @@ class Operation(t.Generic[_T_Co]):
         super().__init_subclass__()
         cls.__abstract__ = cls.__dict__.get("__abstract__", False)
 
-    def __pos__(self):
+        if cls.__abstract__:
+            return
+
+        if cls.__overload__:
+            for prefix in ("nested_", "root_"):
+                for infix in ("", "lazy_"):
+                    at = f"_{prefix}{infix}type_"
+
+                    setattr(cls, at, class_property(attrgetter(f"__concrete__.{at}")))
+
+        else:
+            ns = {
+                "__overload__": True,
+                "__module__": cls.__module__,
+                "__concrete__": cls,
+                "__new__": cls._new_.__func__,
+            }
+
+            nsl, nsr = {"lazy": True}, {"is_root": True}
+
+            def overload(__call__, __bases__=(cls,), __name__=cls.__name__, **kwds):
+                return _define(type(__name__, __bases__, ns | kwds | {"__call__": __call__}))
+
+            def _nested_type_(self: type[cls]):
+                return overload(cls.__call_nested__, source=attr.ib(kw_only=True))
+
+            def _nested_lazy_type_(self: type[cls]):
+                return overload(cls.__call_nested_lazy__, source=attr.ib(kw_only=True), **nsl)
+
+            def _root_type_(self: type[cls]):
+                return overload(cls.__call_root__, **nsr)
+
+            def _root_lazy_type_(self: type[cls]):
+                return overload(cls.__call_root_lazy__, **nsr, **nsl)
+
+            cls.__concrete__ = cls
+            cls._nested_type_ = class_property(cache(_nested_type_))
+            cls._nested_lazy_type_ = class_property(cache(_nested_lazy_type_))
+            cls._root_type_ = class_property(cache(_root_type_))
+            cls._root_lazy_type_ = class_property(cache(_root_lazy_type_))
+            new_fn = cls._new_.__func__
+            if cls.__new__ != Closure.__new__:
+                new_fn = cls.__new__
+            cls.__new__, cls._new_ = Closure.__new__, classmethod(new_fn)
+
+    def __new__(cls, /, *a, lazy=None, **kw):
+        if cls is cls.__concrete__:
+            match (kw.get("source") is not None, not lazy):
+                case (True, True):
+                    cls = cls._nested_type_
+                case (True, False):
+                    cls = cls._nested_lazy_type_
+                case (False, True):
+                    cls = cls._root_type_
+                case (False, False):
+                    cls = cls._root_lazy_type_
+
+        return cls._new_(*a, **kw)
+
+    @classmethod
+    def _new_(cls, /, *a, **kw):
+        self = _object_new(cls)
+        (a or kw) and self.__attrs_init__(*a, **kw)
         return self
 
-    def __compose__(self) -> "Operation[_T_Co]":
-        return +self
+    if t.TYPE_CHECKING:
+        _new_: t.Final[type[Self]]
+
+    def __zana_compose__(self) -> Self:
+        return self
 
     @abstractmethod
     def __call__(self, *a, **kw) -> _T_Co:
         raise NotImplementedError(f"{self!r} getter not supported")
 
-    def __add__(self, o) -> Self:
-        return NotImplemented
+    if t.TYPE_CHECKING:
+
+        @abstractmethod
+        def __call_root__(self, *a, **kw) -> _T_Co:
+            raise NotImplementedError
+
+        @abstractmethod
+        def __call_nested__(self, *a, **kw) -> _T_Co:
+            raise NotImplementedError
+
+        @abstractmethod
+        def __call_nested_lazy__(self, *a, **kw) -> _T_Co:
+            raise NotImplementedError
+
+        @abstractmethod
+        def __call_root_lazy__(self, *a, **kw) -> _T_Co:
+            raise NotImplementedError
 
     def __or__(self, o):
-        if isinstance(o, Operation):
-            return +Composition((self, o))
-        elif isinstance(o, abc.Iterable):
-            return +Composition(chain((self,), o))
-        return NotImplemented
+        if isinstance(o, Closure):
+            return o.lift(self)
+        return NotImplemented  # pragma: no cover
 
     def __ror__(self, o):
-        if isinstance(o, abc.Iterable):
-            return +Composition(chain(o, (self,)))
-        return NotImplemented
+        if isinstance(o, Closure):
+            return self.lift(o)
+        return NotImplemented  # pragma: no cover
 
-    def evolve(self, *args, **kwds):
-        args = dict(zip(self.__positional_attrs__, args)) if args else _empty_dict
-        return attr.evolve(self, **args, **kwds)
+    def __ior__(self, o):
+        return self.__or__(o)
 
-    if t.TYPE_CHECKING:
-        evolve: t.ClassVar[type[Self]]
+    def pipe(self, op: Self | "Closure", *ops: Self | "Closure"):
+        return reduce(zana_ops.or_, ops, self | op) if ops else self | op
+
+    # def rpipe(self, op: Self | "Closure", *ops: Self | "Closure"):
+    #     return reduce(zana_ops.or_, ops, op) | self if ops else op | self
+
+    def lift(self, source: Self | "Closure"):
+        if not self.is_root:
+            source |= self.source
+
+        attrs, kwds = attr.fields(self.__class__), {"source": source, "lazy": self.lazy}
+        for a in attrs:
+            if a.init and a.alias not in kwds:
+                kwds[a.alias] = getattr(self, a.name)
+
+        return self.__concrete__(**kwds)
 
     def deconstruct(self):
-        factory = operation
-        path = f"{factory.__module__}.{factory.__name__}"
+        path = f"{__name__}.operators"
         fields: list[attr.Attribute] = attr.fields(self.__class__)
         args, kwargs, seen = [], {}, set()
 
@@ -217,366 +355,202 @@ class Operation(t.Generic[_T_Co]):
         return path, args, kwargs
 
 
-TSignatureOrIterable = Operation | abc.Iterable
+@_define
+class Ref(Closure[_T_Co]):
+    __slots__ = ()
+    __final__ = True
+    obj: _T_Co = attr.ib()
 
+    def __call_root__(self, obj=None, /) -> _T_Co:
+        return self.obj
 
-@_define()
-class LazyOperation(Operation[_T_Co]):
-    __abstract__ = True
-    lazy: t.ClassVar[t.Literal[True]] = True
-    source: Operation = attr.ib()
+    __call_nested__ = __call_nested_lazy__ = __call_root_lazy__ = None
 
-
-@_define()
-class UnaryOperation(Operation[_T_Co]):
-    __abstract__ = True
-
-    def __call__(self, obj, /):
-        return self.function(obj)
-
-
-@_define()
-class BinaryOperation(Operation[_T_Co]):
-    __abstract__ = True
-    operant: t.Any = attr.ib()
-
-    def __call__(self, obj, /):
-        return self.function(obj, self.operant)
-
-
-@_define()
-class TernaryOperation(Operation[_T_Co]):
-    __abstract__ = True
-    operants: tuple[t.Any] = attr.ib(converter=tuple, validator=attr.validators.max_len(2))
-
-    def __call__(self, obj, /, *args):
-        return self.function(obj, *self.operants, *args)
-
-
-@_define()
-class GenericOperation(Operation[_T_Co]):
-    __abstract__ = True
-    args: tuple[t.Any] = attr.ib(converter=tuple, default=())
-    kwargs: tuple[t.Any] = attr.ib(default=FrozenDict(), converter=FrozenDict)
-    bind: int | bool = attr.ib(default=True, converter=int, kw_only=True)
-
-    def __call__(self, *a, **kw):
-        if bind := a and +self.bind or ():
-            bind, args = a[:bind], self.args + a[bind:]
-        else:
-            args = chain(self.args, a)
-        return self.function(*bind, *args, **self.kwargs | kw)
-
-
-@_define()
-class LazyUnaryOperation(LazyOperation[_T_Co]):
-    __abstract__ = True
-    source: Operation = attr.ib()
-
-    def __call__(self, obj, /):
-        return self.function(self.source(obj))
-
-
-@_define()
-class LazyBinaryOperation(LazyOperation[_T_Co]):
-    __abstract__ = True
-    source: Operation = attr.ib()
-    operant: Operation = attr.ib()
-
-    def __call__(self, obj, /):
-        return self.function(self.source(obj), self.operant(obj))
-
-
-@_define()
-class LazyTernaryOperation(LazyOperation[_T_Co]):
-    __abstract__ = True
-    source: Operation = attr.ib()
-    operants: tuple[t.Any] = attr.ib(converter=tuple, validator=attr.validators.max_len(2))
-
-    def __call__(self, obj, /, *args):
-        return self.function(self.source(obj), *(op(obj) for op in self.operants), *args)
-
-
-@_define()
-class LazyGenericOperation(LazyOperation[_T_Co]):
-    __abstract__ = True
-    source: Operation = attr.ib()
-    args: tuple[Operation] = attr.ib(converter=tuple, default=())
-    kwargs: dict[str, Operation] = attr.ib(default=FrozenDict(), converter=FrozenDict)
-    bind: int | bool = attr.ib(default=True, converter=int, kw_only=True)
-
-    def __call__(self, obj, /, *a, **kw):
-        src, args = self.source(obj), (op(obj) for op in self.args)
-        if bind := +self.bind or ():
-            bind, args = (src,), chain(args, a)
-        else:
-            args = chain(args, (src,), a)
-
-        kwargs = {k: op(obj) for k, op in self.kwargs.items() if k not in kw}
-        return self.function(*bind, *args, **kwargs, **kw)
+    def lift(self, source: Self | "Closure"):
+        return self
 
 
 @_define
-class Ref(Operation[_T_Co]):
-    obj: _T_Co
+class Return(Ref[_T_Co]):
+    __slots__ = ()
     __final__ = True
+    operator = None
 
-    def __call__(self, obj=None, /) -> _T_Co:
+    def __call_nested__(self, *a) -> _T_Co:
+        self.source(*a)
         return self.obj
 
-    def __add__(self, o: object):
-        if isinstance(self.__class__, Ref):
+    def lift(self, source: Self | "Closure"):
+        if isinstance(source, Ref):
+            if source.is_root:
+                return self
+            source = source.source
+        return super(Ref, self).lift(source)
+
+
+@_define
+class Identity(Closure[_T_Co]):
+    __slots__ = ()
+    __final__ = True
+
+    def __call_root__(self, obj: _T_Co, /, *a, **kw) -> _T_Co:
+        return obj
+
+    __call_nested__ = __call_nested_lazy__ = __call_root_lazy__ = None
+
+    def __or__(self, o: object):
+        if isinstance(o, Closure):
             return o
         return NotImplemented
 
-    def __radd__(self, o: object):
-        if isinstance(o, Operation):
-            return self
-        return NotImplemented
-
-    def deconstruct(self):
-        path = f"{self.__class__.__module__}.{self.__class__.__name__}"
-        return path, [self.obj], {}
+    def lift(self, source: Self | "Closure"):
+        return source
 
 
+@UNARY_OP._register
 @_define
-class Identity(UnaryOperation[_T_Co]):
-    __final__ = True
+class UnaryClosure(Closure[_T_Co]):
+    __slots__ = ()
+    __abstract__ = True
 
-    def __call__(self, obj: _T_Co, /) -> _T_Co:
-        return obj
+    def __call_nested__(self, /, *args):
+        return self.function(self.source(*args))
 
-    def __add__(self, o: object):
-        if isinstance(o, Operation):
-            return +o
-        return NotImplemented
+    def __call_root__(self, obj, /):
+        return self.function(obj)
 
-    __radd__ = __add__
-
-    def deconstruct(self):
-        path = f"{self.__class__.__module__}.{self.__class__.__name__}"
-        return path, [], {}
+    __call_nested_lazy__ = __call_root_lazy__ = None
 
 
+@BINARY_OP._register
 @_define
-class LazyIdentity(LazyUnaryOperation[_T_Co]):
-    __final__ = True
-
-    def __call__(self, obj: _T_Co, /) -> _T_Co:
-        return self.source(obj)
-
-
-def _iter_compose(seq: abc.Iterable[Operation], composites: type[abc.Iterable[Operation]]):
-    it = iter(seq)
-    for pre in it:
-        break
-    else:
-        return
-
-    for obj in it:
-        try:
-            pre += obj
-        except TypeError:
-            if composites and isinstance(pre, composites):
-                yield from pre
-            else:
-                yield pre
-            pre = obj
-
-    if composites and isinstance(pre, composites):
-        yield from pre
-    else:
-        yield pre
-
-
-def _join(a: Operation, b: Operation):
-    try:
-        return (a + b,)
-    except TypeError:
-        return a, b
-
-
-class OperationTuple(UserTuple[Operation]):
+class BinaryOpClosure(Closure[_T_Co]):
     __slots__ = ()
+    __abstract__ = True
+    operant: t.Any = attr.ib()
 
-    def __new__(cls: type[Self], path: abc.Iterable[str] = ()) -> Self:
-        if path.__class__ is cls:
-            return path
-        return cls.construct(_iter_compose(path, Composition))
+    def __call_nested__(self, /, *args):
+        return self.function(self.source(*args), self.operant)
 
-    def first_pack(self, __index=slice(1, None)):
-        return self.__tuple_getitem__(0), self.__tuple_getitem__(__index)
+    def __call_nested_lazy__(self, /, *args):
+        return self.function(self.source(*args), self.operant(*args))
 
-    def last_pack(self, __index=slice(-1)):
-        return self.__tuple_getitem__(__index), self.__tuple_getitem__(-1)
+    def __call_root__(self, obj, /):
+        return self.function(obj, self.operant)
 
-    def __str__(self) -> str:
-        return "".join(map(str, self))
-
-    def __add__(self, other: Self) -> Self:
-        if not isinstance(other, abc.Iterable):
-            return NotImplemented
-
-        other = self.__class__(other)
-
-        if not (self and other):
-            return other or self
-
-        (head, lhs), (rhs, tail) = self.last_pack(), other.first_pack()
-        return self.construct(head + _join(lhs, rhs) + tail)
-
-    def __radd__(self, other: tuple) -> Self:
-        __tracebackhide__ = True
-        if isinstance(other, abc.Iterable):
-            return self.__class__(other) + self
-        return NotImplemented
+    def __call_root_lazy__(self, obj, /, *args):
+        return self.function(obj, self.operant(obj, *args))
 
 
-@_define()
-@Composite.register
-class Composition(Operation, abc.Sequence[Operation]):
-    operations: OperationTuple = attr.ib(repr=_repr_str, converter=OperationTuple)
-
-    size: int = attr.ib(cmp=False, repr=False, init=False)
-    size.default(len)
-
-    @property
-    def isterminal(self):
-        return (ops := self.operations) and ops[-1].isterminal or False
-
-    @property
-    def inplace(self):
-        return (ops := self.operations) and ops[-1].inplace or False
-
-    def __call__(self, obj=_notset, /, *a, **kw) -> abc.Callable[[t.Any], _T]:
-        ops, pre = self.operations, () if obj is _notset else (obj,)
-        i, x = 0, len(ops) - 1
-        while x > i:
-            pre, i = (ops[i](*pre),), i + 1
-
-        return ops[-1](*pre, *a, **kw)
-
-    def __pos__(self):
-        path, size = self.operations, self.size
-        return Identity() if size == 0 else +path[0] if size == 1 else self
-
-    def __str__(self) -> str:
-        return " | ".join(map(repr, self))
-
-    def __len__(self):
-        return len(self.operations)
-
-    def __contains__(self, x):
-        return x in self.operations
-
-    @t.overload
-    def __getitem__(self, key: int) -> Operation:
-        ...
-
-    @t.overload
-    def __getitem__(self, key: slice) -> Self:
-        ...
-
-    def __getitem__(self, key):
-        val = self.operations[key]
-        if isinstance(key, slice):
-            val = self.evolve(val)
-        return val
-
-    def __iter__(self):
-        return iter(self.operations)
-
-    def __reversed__(self):
-        return reversed(self.operations)
-
-    def __add__(self, o: TSignatureOrIterable):
-        if isinstance(o, Composition):
-            path = self.operations + o.operations
-        else:
-            return NotImplemented
-        return +self.evolve(path)
-
-    def __or__(self, o: TSignatureOrIterable):
-        if isinstance(o, Composition):
-            path = o.operations
-        elif isinstance(o, Operation):
-            path = (o,)
-        elif isinstance(o, abc.Iterable):
-            path = o
-        else:
-            return NotImplemented
-        return +self.evolve(self.operations + path)
-
-    def __ror__(self, o: TSignatureOrIterable):
-        if isinstance(o, abc.Iterable):
-            return +self.evolve(o + self.operations)
-        return NotImplemented
-
-    def deconstruct(self):
-        path = f"{__name__}.{compose.__name__}"
-        return path, list(self), {}
-
-
-class Composable(Interface, t.Generic[_T_Co], parent=Operation):
+@VARIANT_OP._register
+@_define
+class VariantOpExpression(Closure[_T_Co]):
     __slots__ = ()
+    __abstract__ = True
+    operants: tuple[t.Any] = attr.ib(converter=tuple)
 
-    @abstractmethod
-    def __compose__(self) -> "Operation[_T_Co]":
-        ...
+    def __call_nested__(self, /, *args):
+        return self.function(self.source(*args[:1]), *self.operants, *args[1:])
+
+    def __call_nested_lazy__(self, /, *args):
+        pre = args[:1]
+        return self.function(self.source(*pre), *(op(*pre) for op in self.operants), *args[1:])
+
+    def __call_root__(self, /, *args):
+        return self.function(*args[:1], *self.operants, *args[1:])
+
+    def __call_root_lazy__(self, /, *args):
+        pre = args[:1]
+        return self.function(*pre, *(op(*pre) for op in self.operants), *args[1:])
+
+
+@GENERIC_OP._register
+@_define
+class GenericClosure(Closure[_T_Co]):
+    __slots__ = ()
+    __abstract__ = True
+    args: tuple[t.Any] = attr.ib(converter=tuple, default=())
+    kwargs: FrozenDict[str, t.Any] = attr.ib(default=FrozenDict(), converter=FrozenDict)
+    bind: int | bool = attr.ib(default=1, converter=int)
+    offset: int = attr.ib(default=1, converter=int)
+
+    def __call_nested__(self, /, *a, **kw):
+        offset, src, args, kwds = self.offset, self.source, self.args, self.kwargs
+        a = (src(*a[:offset]),) + a[offset:]
+        if bind := a and self.bind or ():
+            bind, a = a[:bind], a[bind:]
+        return self.function(*bind, *args, *a, **kwds | kw)
+
+    def __call_nested_lazy__(self, /, *a, **kw):
+        offset, src, args, kwds = self.offset, self.source, self.args, self.kwargs
+        a = (src(*(pre := a[:offset])),) + a[offset:]
+        if bind := a and self.bind or ():
+            bind, a = a[:bind], a[bind:]
+
+        return self.function(
+            *bind,
+            *(op(*pre) for op in args),
+            *a,
+            **{k: op(*pre) for k, op in kwds.items() if k not in kw},
+            **kw,
+        )
+
+    def __call_root__(self, /, *a, **kw):
+        args, kwds = self.args, self.kwargs
+        if bind := a and self.bind or ():
+            bind, a = a[:bind], a[bind:]
+        return self.function(*bind, *args, *a, **kwds | kw)
+
+    def __call_root_lazy__(self, /, *a, **kw):
+        offset, args, kwds = self.offset, self.args, self.kwargs
+        pre, a = a[:offset], a[max(offset - 1, 0) :]
+
+        if bind := a and self.bind or ():
+            bind, a = a[:bind], a[bind:]
+
+        return self.function(
+            *bind,
+            *(op(*pre) for op in args),
+            *a,
+            **{k: op(*pre) for k, op in kwds.items() if k not in kw},
+            **kw,
+        )
 
 
 @Composable.register
-class trap(t.Generic[_T_Co]):
-    __slots__ = ("__src", "__weakref__")
-    __src: tuple[Operation[_T_Co]]
+class Composer(t.Generic[_T_Co]):
+    __slots__ = ("__zana_composer_src__", "__weakref__")
+    __zana_composer_src__: Closure[_T_Co]
 
     __class_getitem__ = classmethod(GenericAlias)
 
-    def __new__(cls: type[Self], *src: Operation[_T_Co]) -> _T_Co | Composable[_T_Co]:
+    def __new__(cls, src: Closure[_T_Co] = _notset) -> _T_Co | Composable[_T_Co]:
         self = _object_new(cls)
-        object.__setattr__(self, "_trap__src", src)
+        _object_setattr(self, "__zana_composer_src__", compose(src))
         return self
 
-    def __compose__(self):
-        return compose(*self.__src)
+    def __zana_compose__(self):
+        return self.__zana_composer_src__
 
-    def __setattr__(self, name, val) -> None:
-        raise attr.exceptions.FrozenInstanceError()
-
-    def __setattr__(self, name, val) -> None:
-        raise TypeError(f"self.{name} = {val!r} is not trappable")
-
-    def __delattr__(self, name) -> None:
-        raise TypeError(f"del self.{name} is not trappable")
-
-    def __setitem__(self, name, val) -> None:
-        raise TypeError(f"self[{name!r}] = {val!r} is not trappable")
-
-    def __delitem__(self, name) -> None:
-        raise TypeError(f"del self[{name!r}] is not trappable")
+    def __bool__(self):
+        return not (self.__zana_composer_src__ is _IDENTITY)
 
     def __repr__(self):
-        return f"{self.__class__.__name__}({str(self.__compose__())!r})"
-
-    def __str__(self):
-        return f"{self.__compose__()!s}"
-
-    def __len__(self):
-        return len(self.__src)
-
-    def __iter__(self):
-        return iter(self.__src)
+        return f"{self.__class__.__name__}({str(self.__zana_compose__())!r})"
 
     def __reduce__(self):
-        return self.__class__, self.__src
+        return type(self), (self.__zana_composer_src__,)
+
+    def __deepcopy__(self, memo):
+        return type(self)(deepcopy(self.__zana_composer_src__, memo))
 
     @classmethod
-    def __define_operator_methods__(cls: type[Self], op: "OperatorInfo"):
-        mro = [b.__dict__ for b in cls.__mro__ if issubclass(b, trap)]
+    def __zana_composer_define_traps__(cls: type[Self], op: "OperatorInfo"):
+        mro = [b.__dict__ for b in cls.__mro__ if issubclass(b, Composer)]
         for name, reverse in [(op.trap_name, False), (op.reverse_trap_name, True)]:
-            if not (name and all(b.get(name) is None for b in mro)):
+            if not (name and all(b.get(name) in (None, ...) for b in mro)):
                 return
-            elif method := op.trap_method(reverse=reverse):
+            elif method := op.get_trap(reverse=reverse):
                 method.__name__ = name
                 method.__qualname__ = f"{cls.__qualname__}.{name}"
                 method.__module__ = f"{cls.__module__}"
@@ -584,12 +558,29 @@ class trap(t.Generic[_T_Co]):
                 setattr(cls, name, method)
 
 
+class magic(Composer[_T_Co]):
+    __slots__ = ()
+
+    def forbid(nm):
+        def meth(self, *a, **kw) -> None:  # pragma: no cover
+            raise TypeError(f"none trappable operation {nm!r}")
+
+        meth.__name__ = meth.__qualname__ = nm
+        return meth
+
+    for nm in ("__setattr__", "__delattr__", "__setitem__", "__delitem__"):
+        vars()[nm] = forbid(nm)
+
+    del forbid, nm
+
+
 @attr.define(frozen=True, cache_hash=True)
-class OperatorInfo(t.Generic[_T_Op]):
+class OperatorInfo:
+    __slots__ = ()
     name: str = attr.ib(validator=[attr.validators.instance_of(str), attr.validators.min_len(1)])
     identifier: str = attr.ib(init=False, repr=False, cmp=False)
-    type: OperationType = attr.ib(
-        converter=OperationType,
+    type: OpType = attr.ib(
+        converter=OpType,
         cmp=False,
         repr=attr.converters.pipe(attrgetter("name"), repr),
     )
@@ -605,106 +596,82 @@ class OperatorInfo(t.Generic[_T_Op]):
     trap_name: str = attr.ib(kw_only=True, cmp=False, init=False)
     reverse_trap_name: str = attr.ib(kw_only=True, init=False, repr=False, cmp=False)
 
-    _impl: t.Type[_T_Op] = attr.ib(kw_only=True, repr=False, cmp=False, alias="impl")
-    _lazy_impl: t.Type[_T_Op] = attr.ib(kw_only=True, repr=False, cmp=False, alias="lazy_impl")
+    _impl: t.Type[Closure] = attr.ib(kw_only=True, repr=False, cmp=False, alias="impl")
 
-    impl: t.Type[_T_Op] = attr.ib(
+    impl: t.Type[Closure] = attr.ib(
         init=False,
         cmp=False,
         repr=attr.converters.optional(attr.converters.pipe(attrgetter("__name__"), repr)),
     )
-    lazy_impl: t.Type[_T_Op] = attr.ib(
-        init=False,
-        cmp=False,
-        repr=attr.converters.optional(attr.converters.pipe(attrgetter("__name__"), repr)),
-    )
+    __call__: t.Type[Closure] = attr.ib(init=False, cmp=False, repr=False)
 
     @property
     def isbuiltin(self):
         return self.name in _builtin_ops
 
-    @trap.default
-    def _default_trap(self):
-        return self.isbuiltin and self.name not in _non_trappable_ops
+    if True:
 
-    @trap_name.default
-    def _init_trap_name(self):
-        if (val := self.trap) is True:
-            return f"__{self.name.strip('_')}__"
-        elif isinstance(val, str):
-            return val
+        @trap.default
+        def _default_trap(self):
+            return self.isbuiltin and self.name not in _non_trappable_ops
 
-    @isterminal.default
-    def _default_isterminal(self):
-        return self.name in _terminal_ops or (False if self.isbuiltin else None)
+        @trap_name.default
+        def _init_trap_name(self):
+            if (val := self.trap) is True:
+                return f"__{self.name.strip('_')}__"
+            elif isinstance(val, str):
+                return val
 
-    @inplace.default
-    def _default_isinplace(self):
-        name = self.name
-        return self.isterminal or (
-            self.type is BINARY_OP and name[:1] == "i" and name[1:] in _builtin_binary_ops
-        )
+        @isterminal.default
+        def _default_isterminal(self):
+            return self.name in _terminal_ops or (False if self.isbuiltin else None)
 
-    @reverse.default
-    def _init_reversible(self):
-        return self.type is BINARY_OP and f"i{self.name}" in _builtin_binary_ops
+        @inplace.default
+        def _default_isinplace(self):
+            name = self.name
+            return self.isterminal or (
+                self.type is BINARY_OP and name[:1] == "i" and name[1:] in _builtin_binary_ops
+            )
 
-    @reverse_trap_name.default
-    def _init_reverse_magic_name(self):
-        if magic := (rev := self.reverse) is True and self.trap_name:
-            val = f"r{magic.lstrip('_')}"
-            return f"{'_' * (1+len(magic)-len(val))}{val}"
-        elif isinstance(rev, str):
-            return rev
+        @reverse.default
+        def _init_reversible(self):
+            return self.type is BINARY_OP and f"i{self.name}" in _builtin_binary_ops
 
-    @identifier.default
-    def _init_identifier(self):
-        if (name := self.name) and name.isidentifier():
-            if keyword.iskeyword(name):
-                name = f"{name}_"
-            return name
+        @reverse_trap_name.default
+        def _init_reverse_magic_name(self):
+            if magic := (rev := self.reverse) is True and self.trap_name:
+                val = f"r{magic.lstrip('_')}"
+                return f"{'_' * (1+len(magic)-len(val))}{val}"
+            elif isinstance(rev, str):
+                return rev
 
-    @function.default
-    def _init_callback(self):
-        name = self.identifier or self.name
-        for mod in _operator_modules:
-            if hasattr(mod, name):
-                return getattr(mod, name)
+        @identifier.default
+        def _init_identifier(self):
+            if (name := self.name) and name.isidentifier():
+                if keyword.iskeyword(name):
+                    name = f"{name}_"
+                return name
 
-    @_impl.default
-    def _default_impl(self):
-        match self.type:
-            case OperationType.UNARY:
-                return UnaryOperation
-            case OperationType.BINARY:
-                return BinaryOperation
-            case OperationType.TERNARY:
-                return TernaryOperation
-            case OperationType.GENERIC:
-                return GenericOperation
+        @function.default
+        def _init_callback(self):
+            name = self.identifier or self.name
+            for mod in _operator_modules:
+                if hasattr(mod, name):
+                    return getattr(mod, name)
 
-    @_lazy_impl.default
-    def _default_lazy_impl(self):
-        match self.type:
-            case OperationType.UNARY:
-                return LazyUnaryOperation
-            case OperationType.BINARY:
-                return LazyBinaryOperation
-            case OperationType.TERNARY:
-                return LazyTernaryOperation
-            case OperationType.GENERIC:
-                return LazyGenericOperation
+        @_impl.default
+        def _default_impl(self):
+            return self.type.implementation
 
-    @impl.default
-    def _init_impl(self):
-        return self.make_impl_class(self._impl)
+        @impl.default
+        def _init_impl(self):
+            return self.make_impl_class(self._impl)
 
-    @lazy_impl.default
-    def _init_lazy_impl(self):
-        if base := self._lazy_impl:
-            return self.make_impl_class(base)
+        @__call__.default
+        def _init__call__(self):
+            return self.impl
 
-    def make_impl_class(self, base: t.Type[_T_Op]):
+    def make_impl_class(self, base: t.Type[_T_Expr]):
         function, isterminal, inplace = staticmethod(self.function), self.isterminal, self.inplace
         if base.__final__:
             assert base.operator is None
@@ -718,92 +685,74 @@ class OperatorInfo(t.Generic[_T_Op]):
             )
             return base
 
-        name = f"{self.identifier or base.__name__}_{'lazy_' if base.lazy else ''}operation"
+        name = f"{self.identifier or base.__name__}_operation"
         name = "".join(map(methodcaller("capitalize"), name.split("_")))
-        if getattr(base.__call__, "__isabstractmethod__", False):
-            __call__ = function
-        else:
-            __call__ = base.__call__
-
         ns = {
             "__slots__": (),
             "__module__": base.__module__,
             "__name__": name,
             "__qualname__": f"{''.join(base.__qualname__.rpartition('.')[:1])}{name}",
             "__final__": True,
-            "__call__": __call__,
             "operator": self,
             "function": function,
             "isterminal": isterminal,
             "inplace": inplace,
         }
 
-        cls = new_class(name, (base,), None, methodcaller("update", ns))
-        _define(cls, auto_attribs=False)
+        cls = type(name, (base,), ns)
+        cls = _define(cls)
         return cls
 
     def __str__(self) -> str:
         return self.name
 
-    def __call__(self, *args, lazy=False, **kwargs) -> _T_Op:
-        cls = self.lazy_impl if lazy is True else self.impl
-        return cls(*args, **kwargs)
-
-    def trap_method(op, reverse: bool = False):
-        if not op.trap:
-            return
-
+    def get_trap(op, reverse: bool = False):
         match (op.type, not not reverse):
-            case (OperationType.UNARY, False):
+            case (OpType.UNARY, False):
 
-                def method(self: trap):
+                def method(self: Composer):
                     nonlocal op
-                    return self.__class__(*self, op())
+                    return self.__class__(self.__zana_compose__() | op())
 
-            case (OperationType.BINARY, False):
+            case (OpType.BINARY, False):
 
-                def method(self: trap, o):
+                def method(self: Composer, o):
                     nonlocal op
                     if isinstance(o, Composable):
-                        return self.__class__(op(self.__compose__(), o.__compose__(), lazy=True))
-                    else:
-                        return self.__class__(*self, op(o))
-
-            case (OperationType.BINARY, True):
-
-                def method(self: trap, o):
-                    nonlocal op
-
-                    if isinstance(o, Composable):
-                        return self.__class__(op(o.__compose__(), self.__compose__(), lazy=True))
-                    else:
-                        return self.__class__(op(o), *self)
-
-            case (OperationType.TERNARY, False):
-
-                def method(self: trap, *args):
-                    nonlocal op
-                    if any(isinstance(o, Composable) for o in args):
-                        args = map(ensure_composable, args)
-                        return self.__class__(op(self.__compose__(), args, lazy=True))
-                    else:
-                        return self.__class__(*self, op(args))
-
-            case (OperationType.GENERIC, False):
-
-                def method(self: trap, *args, **kwargs):
-                    nonlocal op
-                    if any(isinstance(o, Composable) for o in chain(args, kwargs.values())):
                         return self.__class__(
-                            op(
-                                self.__compose__(),
-                                map(ensure_composable, args),
-                                {k: ensure_composable(v) for k, v in kwargs.items()},
-                                lazy=True,
-                            )
+                            self.__zana_compose__() | op(o.__zana_compose__(), lazy=True)
                         )
                     else:
-                        return self.__class__(*self, op(args, kwargs))
+                        return self.__class__(self.__zana_compose__() | op(o))
+
+            case (OpType.BINARY, True):
+
+                def method(self: Composer, o):
+                    nonlocal op
+                    return self.__class__(compose(o) | op(self.__zana_compose__(), lazy=True))
+
+            case (OpType.VARIANT, False):  # pragma: no cover
+
+                def method(self: Composer, *args):
+                    nonlocal op
+                    if any(isinstance(o, Composable) for o in args):
+                        return self.__class__(
+                            self.__zana_compose__() | op(compose(*args), lazy=True)
+                        )
+                    else:
+                        return self.__class__(self.__zana_compose__() | op(args))
+
+            case (OpType.GENERIC, False):
+
+                def method(self: Composer, *args, **kwds):
+                    nonlocal op
+                    if any(isinstance(o, Composable) for o in chain(args, kwds.values())):
+                        return self.__class__(
+                            self.__zana_compose__()
+                            | op(args and compose(*args), kwds and compose(**kwds), lazy=True)
+                        )
+                    else:
+                        return self.__class__(self.__zana_compose__() | op(args, kwds))
 
         return method
 
@@ -845,6 +794,9 @@ class OperatorRegistry(abc.Mapping[str, OperatorInfo]):
     def __iter__(self) -> int:
         return iter(self.__registry)
 
+    def __call__(self, operator: str, /, *args, **kwargs):
+        return self[operator](*args, **kwargs)
+
     @t.overload
     def register(self, op: OperatorInfo) -> OperatorInfo:
         ...
@@ -867,7 +819,7 @@ class OperatorRegistry(abc.Mapping[str, OperatorInfo]):
             assert old is op
             self.__identifiers[op.identifier] = op
             self.__class__.__annotations__[op.identifier] = OperatorInfo
-        trap.__define_operator_methods__(op)
+        magic.__zana_composer_define_traps__(op)
         return op
 
     if t.TYPE_CHECKING:
@@ -990,12 +942,12 @@ _builtin_binary_ops = FrozenDict.fromkeys(
 )
 
 
-_builtin_ternary_ops = FrozenDict.fromkeys(
+_builtin_variant_ops = FrozenDict.fromkeys(
     [
         "setitem",
         "setattr",
     ],
-    TERNARY_OP,
+    VARIANT_OP,
 )
 
 
@@ -1006,6 +958,7 @@ _builtin_generic_ops = FrozenDict.fromkeys(
         # "methodcaller",
         "call",
         "ref",
+        "return",
     ],
     GENERIC_OP,
 )
@@ -1032,7 +985,7 @@ _non_trappable_ops = {
 
 
 _builtin_ops = (
-    _builtin_unary_ops | _builtin_binary_ops | _builtin_ternary_ops | _builtin_generic_ops
+    _builtin_unary_ops | _builtin_binary_ops | _builtin_variant_ops | _builtin_generic_ops
 )
 
 
@@ -1092,9 +1045,11 @@ _T_OpName = t.Literal[
 
 
 [
-    ops.register("ref", GENERIC_OP, operator.none, impl=Ref, lazy_impl=None, trap=None),
-    ops.register(
-        "identity", UNARY_OP, operator.identity, impl=Identity, lazy_impl=LazyIdentity, trap=None
-    ),
+    ops.register("ref", GENERIC_OP, zana_ops.none, impl=Ref, trap=None),
+    ops.register("return", GENERIC_OP, zana_ops.none, impl=Return, trap=None),
+    ops.register("identity", UNARY_OP, zana_ops.identity, impl=Identity, trap=None),
     *(ops.register(name, otp) for name, otp in _builtin_ops.items() if name not in ops),
 ]
+
+
+_IDENTITY = Identity()

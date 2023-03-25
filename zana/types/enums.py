@@ -76,8 +76,8 @@ class Enum(enum.Enum, metaclass=EnumMeta):
         return str(self.value)
 
     # A similar format was proposed for Python 3.10.
-    # def __repr__(self):
-    #     return f"{self.__class__.__qualname__}.{self._name_}"
+    def __repr__(self):
+        return f"{self.__class__.__qualname__}.{self._name_}"
 
 
 class IntEnum(int, Enum):

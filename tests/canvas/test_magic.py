@@ -3,7 +3,7 @@ from operator import methodcaller
 import pytest as pyt
 
 from tests.canvas.conftest import T_ExprMode, T_ExprType
-from zana.canvas.nodes import (
+from zana.canvas import (
     AbcLazyClosure,
     BinaryOpClosure,
     Closure,
