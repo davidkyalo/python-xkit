@@ -1,5 +1,5 @@
 import keyword
-import operator as builtin_ops
+import operator as py_operator
 import typing as t
 from abc import abstractmethod
 from collections import abc
@@ -37,7 +37,7 @@ _T_Kwarg = t.TypeVar("_T_Kwarg", bound=FrozenDict, covariant=True)
 _T_Key = t.TypeVar("_T_Key", slice, int, str, t.SupportsIndex, abc.Hashable)
 _T_Fn = t.TypeVar("_T_Fn", bound=abc.Callable)
 _T_Attr = t.TypeVar("_T_Attr", bound=str)
-_T_Expr = t.TypeVar("_T_Expr", bound="Expression")
+_T_Expr = t.TypeVar("_T_Expr", bound="Closure")
 
 
 logger = getLogger(__name__)
@@ -47,7 +47,7 @@ _empty_dict = FrozenDict()
 
 _repr_str = attr.converters.pipe(str, repr)
 
-_operator_modules = (zana_ops, builtin_ops)
+_operator_modules = (zana_ops, py_operator)
 
 _notset = t.TypeVar("_notset")
 
@@ -83,18 +83,24 @@ if not t.TYPE_CHECKING:
         )
 
 
-def maybe_expr(obj) -> "Expression":
-    return obj.__expr__() if isinstance(obj, SupportsExpr) else obj
+def compose(obj=_notset, /, *args, **kwds) -> "Closure":
+    if not (args or kwds):
+        if obj is _notset:
+            return _IDENTITY
+        elif isinstance(obj, Composable):
+            return obj.__zana_compose__()
+        else:
+            return Ref(obj)
+    elif not kwds:
+        return tuple(compose(a) for it in ((obj,), args) for a in it)
+    elif not args and obj is _notset:
+        return {k: compose(v) for k, v in kwds.items()}
+    else:
+        raise TypeError(f"positional and keyword arguments are mutually exclusive.")
 
 
-def to_expr(obj) -> "Expression":
-    return obj.__expr__() if isinstance(obj, SupportsExpr) else Ref(obj)
-
-
-# def expr(operator: "str | SupportsExpr", /, *args, **kwargs):
-#     if isinstance(operator, SupportsExpr):
-#         return operator.__expr__()
-#     return ops[operator](*args, **kwargs)
+# def compose(obj=_notset) -> "Closure":
+#     return obj.__compose__() if isinstance(obj, Composable) else Ref(obj)
 
 
 class OpType(IntEnum):
@@ -102,7 +108,7 @@ class OpType(IntEnum):
     BINARY = 2, "Binary (2 operants)"
     VARIANT = 3, "Variant (* operants)"
     GENERIC = 4, "Generic (allow args and kwargs)"
-    _impl_map_: abc.Mapping[Self, type["Expression"]]
+    _impl_map_: abc.Mapping[Self, type["Closure"]]
 
     @property
     def implementation(self):
@@ -121,31 +127,31 @@ VARIANT_OP = OpType.VARIANT
 GENERIC_OP = OpType.GENERIC
 
 
-class AbcNestedExpr(Interface[_T_Co], parent="Expression"):
+class AbcNestedClosure(Interface[_T_Co], parent="Closure"):
     @abstractmethod
     def __call_nested__(self, *a, **kw) -> _T_Co:
         ...
 
 
-class AbcNestedLazyExpr(Interface[_T_Co], parent="Expression"):
+class AbcNestedLazyClosure(Interface[_T_Co], parent="Closure"):
     @abstractmethod
     def __call_nested_lazy__(self, *a, **kw) -> _T_Co:
         raise NotImplementedError
 
 
-class AbcRootExpr(Interface[_T_Co], parent="Expression"):
+class AbcRootClosure(Interface[_T_Co], parent="Closure"):
     @abstractmethod
     def __call_root__(self, *a, **kw) -> _T_Co:
         raise NotImplementedError
 
 
-class AbcRootLazyExpr(Interface[_T_Co], parent="Expression"):
+class AbcRootLazyClosure(Interface[_T_Co], parent="Closure"):
     @abstractmethod
     def __call_root_lazy__(self, *a, **kw) -> _T_Co:
         ...
 
 
-class AbcLazyExpr(Interface[_T_Co], parent="Expression", total=False):
+class AbcLazyClosure(Interface[_T_Co], parent="Closure", total=False):
     @abstractmethod
     def __call_nested_lazy__(self, *a, **kw) -> _T_Co:
         raise NotImplementedError
@@ -155,15 +161,15 @@ class AbcLazyExpr(Interface[_T_Co], parent="Expression", total=False):
         ...
 
 
-class SupportsExpr(Interface, t.Generic[_T_Co], parent="Expression"):
+class Composable(Interface, t.Generic[_T_Co], parent="Closure"):
     __slots__ = ()
 
     @abstractmethod
-    def __expr__(self) -> "Expression[_T_Co]":
+    def __zana_compose__(self) -> "Closure[_T_Co]":
         ...
 
 
-class Expression(t.Generic[_T_Co]):
+class Closure(t.Generic[_T_Co]):
     __slots__ = ()
 
     __class_getitem__ = classmethod(GenericAlias)
@@ -192,8 +198,6 @@ class Expression(t.Generic[_T_Co]):
     def name(self):
         return self.operator.name
 
-    _cs = set()
-
     def __init_subclass__(cls) -> None:
         super().__init_subclass__()
         cls.__abstract__ = cls.__dict__.get("__abstract__", False)
@@ -219,15 +223,6 @@ class Expression(t.Generic[_T_Co]):
             nsl, nsr = {"lazy": True}, {"is_root": True}
 
             def overload(__call__, __bases__=(cls,), __name__=cls.__name__, **kwds):
-                # if __name__ is None:
-                #     if kwds.get("is_root"):
-                #         __name__ = "Root"
-                #     else:
-                #         __name__ = "Nested"
-
-                #     if kwds.get("lazy"):
-                #         __name__ += "Lazy"
-                #     __name__ += cls.__name__
                 return _define(type(__name__, __bases__, ns | kwds | {"__call__": __call__}))
 
             def _nested_type_(self: type[cls]):
@@ -248,9 +243,9 @@ class Expression(t.Generic[_T_Co]):
             cls._root_type_ = class_property(cache(_root_type_))
             cls._root_lazy_type_ = class_property(cache(_root_lazy_type_))
             new_fn = cls._new_.__func__
-            if cls.__new__ != Expression.__new__:
+            if cls.__new__ != Closure.__new__:
                 new_fn = cls.__new__
-            cls.__new__, cls._new_ = Expression.__new__, classmethod(new_fn)
+            cls.__new__, cls._new_ = Closure.__new__, classmethod(new_fn)
 
     def __new__(cls, /, *a, lazy=None, **kw):
         if cls is cls.__concrete__:
@@ -263,6 +258,7 @@ class Expression(t.Generic[_T_Co]):
                     cls = cls._root_type_
                 case (False, False):
                     cls = cls._root_lazy_type_
+
         return cls._new_(*a, **kw)
 
     @classmethod
@@ -274,10 +270,7 @@ class Expression(t.Generic[_T_Co]):
     if t.TYPE_CHECKING:
         _new_: t.Final[type[Self]]
 
-    # def __pos__(self):
-    #     return self
-
-    def __expr__(self) -> "Expression[_T_Co]":
+    def __zana_compose__(self) -> Self:
         return self
 
     @abstractmethod
@@ -302,36 +295,26 @@ class Expression(t.Generic[_T_Co]):
         def __call_root_lazy__(self, *a, **kw) -> _T_Co:
             raise NotImplementedError
 
-    # def __add__(self, o) -> Self:
-    #     return NotImplemented
-
     def __or__(self, o):
-        if isinstance(o, Expression):
+        if isinstance(o, Closure):
             return o.lift(self)
         return NotImplemented  # pragma: no cover
 
     def __ror__(self, o):
-        if isinstance(o, Expression):
+        if isinstance(o, Closure):
             return self.lift(o)
         return NotImplemented  # pragma: no cover
 
     def __ior__(self, o):
         return self.__or__(o)
 
-    # def evolve(self, *args, **kwds):
-    #     args = dict(zip(self.__positional_attrs__, args)) if args else _empty_dict
-    #     return attr.evolve(self, **args, **kwds)
-
-    # if t.TYPE_CHECKING:
-    #     evolve: t.ClassVar[type[Self]]
-
-    def pipe(self, op: Self | "Expression", *ops: Self | "Expression"):
+    def pipe(self, op: Self | "Closure", *ops: Self | "Closure"):
         return reduce(zana_ops.or_, ops, self | op) if ops else self | op
 
-    def rpipe(self, op: Self | "Expression", *ops: Self | "Expression"):
-        return reduce(zana_ops.or_, ops, op) | self if ops else op | self
+    # def rpipe(self, op: Self | "Closure", *ops: Self | "Closure"):
+    #     return reduce(zana_ops.or_, ops, op) | self if ops else op | self
 
-    def lift(self, source: Self | "Expression"):
+    def lift(self, source: Self | "Closure"):
         if not self.is_root:
             source |= self.source
 
@@ -373,7 +356,7 @@ class Expression(t.Generic[_T_Co]):
 
 
 @_define
-class Ref(Expression[_T_Co]):
+class Ref(Closure[_T_Co]):
     __slots__ = ()
     __final__ = True
     obj: _T_Co = attr.ib()
@@ -383,7 +366,7 @@ class Ref(Expression[_T_Co]):
 
     __call_nested__ = __call_nested_lazy__ = __call_root_lazy__ = None
 
-    def lift(self, source: Self | "Expression"):
+    def lift(self, source: Self | "Closure"):
         return self
 
 
@@ -397,7 +380,7 @@ class Return(Ref[_T_Co]):
         self.source(*a)
         return self.obj
 
-    def lift(self, source: Self | "Expression"):
+    def lift(self, source: Self | "Closure"):
         if isinstance(source, Ref):
             if source.is_root:
                 return self
@@ -406,7 +389,7 @@ class Return(Ref[_T_Co]):
 
 
 @_define
-class Identity(Expression[_T_Co]):
+class Identity(Closure[_T_Co]):
     __slots__ = ()
     __final__ = True
 
@@ -416,17 +399,17 @@ class Identity(Expression[_T_Co]):
     __call_nested__ = __call_nested_lazy__ = __call_root_lazy__ = None
 
     def __or__(self, o: object):
-        if isinstance(o, Expression):
+        if isinstance(o, Closure):
             return o
         return NotImplemented
 
-    def lift(self, source: Self | "Expression"):
+    def lift(self, source: Self | "Closure"):
         return source
 
 
 @UNARY_OP._register
 @_define
-class UnaryOpExpression(Expression[_T_Co]):
+class UnaryClosure(Closure[_T_Co]):
     __slots__ = ()
     __abstract__ = True
 
@@ -441,7 +424,7 @@ class UnaryOpExpression(Expression[_T_Co]):
 
 @BINARY_OP._register
 @_define
-class BinaryOpExpression(Expression[_T_Co]):
+class BinaryOpClosure(Closure[_T_Co]):
     __slots__ = ()
     __abstract__ = True
     operant: t.Any = attr.ib()
@@ -461,7 +444,7 @@ class BinaryOpExpression(Expression[_T_Co]):
 
 @VARIANT_OP._register
 @_define
-class VariantOpExpression(Expression[_T_Co]):
+class VariantOpExpression(Closure[_T_Co]):
     __slots__ = ()
     __abstract__ = True
     operants: tuple[t.Any] = attr.ib(converter=tuple)
@@ -483,7 +466,7 @@ class VariantOpExpression(Expression[_T_Co]):
 
 @GENERIC_OP._register
 @_define
-class GenericOpExpression(Expression[_T_Co]):
+class GenericClosure(Closure[_T_Co]):
     __slots__ = ()
     __abstract__ = True
     args: tuple[t.Any] = attr.ib(converter=tuple, default=())
@@ -534,37 +517,49 @@ class GenericOpExpression(Expression[_T_Co]):
         )
 
 
-_default_trap_expr = Identity()
-
-
-@SupportsExpr.register
-class trap(t.Generic[_T_Co]):
-    __slots__ = ("__expr", "__weakref__")
-    __expr: tuple[Expression[_T_Co]]
+@Composable.register
+class Composer(t.Generic[_T_Co]):
+    __slots__ = ("__zana_composer_src__", "__weakref__")
+    __zana_composer_src__: Closure[_T_Co]
 
     __class_getitem__ = classmethod(GenericAlias)
 
-    def __new__(
-        cls, expression: Expression[_T_Co] = _default_trap_expr
-    ) -> _T_Co | SupportsExpr[_T_Co]:
+    def __new__(cls, src: Closure[_T_Co] = _notset) -> _T_Co | Composable[_T_Co]:
         self = _object_new(cls)
-        _object_setattr(self, "_trap__expr", to_expr(expression))
+        _object_setattr(self, "__zana_composer_src__", compose(src))
         return self
 
-    def __expr__(self):
-        return self.__expr
+    def __zana_compose__(self):
+        return self.__zana_composer_src__
 
     def __bool__(self):
-        return self.__expr is not _default_trap_expr
+        return not (self.__zana_composer_src__ is _IDENTITY)
 
     def __repr__(self):
-        return f"{self.__class__.__name__}({str(self.__expr__())!r})"
+        return f"{self.__class__.__name__}({str(self.__zana_compose__())!r})"
 
     def __reduce__(self):
-        return type(self), (self.__expr,)
+        return type(self), (self.__zana_composer_src__,)
 
     def __deepcopy__(self, memo):
-        return type(self)(deepcopy(self.__expr, memo))
+        return type(self)(deepcopy(self.__zana_composer_src__, memo))
+
+    @classmethod
+    def __zana_composer_define_traps__(cls: type[Self], op: "OperatorInfo"):
+        mro = [b.__dict__ for b in cls.__mro__ if issubclass(b, Composer)]
+        for name, reverse in [(op.trap_name, False), (op.reverse_trap_name, True)]:
+            if not (name and all(b.get(name) in (None, ...) for b in mro)):
+                return
+            elif method := op.get_trap(reverse=reverse):
+                method.__name__ = name
+                method.__qualname__ = f"{cls.__qualname__}.{name}"
+                method.__module__ = f"{cls.__module__}"
+
+                setattr(cls, name, method)
+
+
+class magic(Composer[_T_Co]):
+    __slots__ = ()
 
     def forbid(nm):
         def meth(self, *a, **kw) -> None:  # pragma: no cover
@@ -577,19 +572,6 @@ class trap(t.Generic[_T_Co]):
         vars()[nm] = forbid(nm)
 
     del forbid, nm
-
-    @classmethod
-    def __define_operator_methods__(cls: type[Self], op: "OperatorInfo"):
-        mro = [b.__dict__ for b in cls.__mro__ if issubclass(b, trap)]
-        for name, reverse in [(op.trap_name, False), (op.reverse_trap_name, True)]:
-            if not (name and all(b.get(name) is None for b in mro)):
-                return
-            elif method := op.trap_method(reverse=reverse):
-                method.__name__ = name
-                method.__qualname__ = f"{cls.__qualname__}.{name}"
-                method.__module__ = f"{cls.__module__}"
-
-                setattr(cls, name, method)
 
 
 @attr.define(frozen=True, cache_hash=True)
@@ -614,14 +596,14 @@ class OperatorInfo:
     trap_name: str = attr.ib(kw_only=True, cmp=False, init=False)
     reverse_trap_name: str = attr.ib(kw_only=True, init=False, repr=False, cmp=False)
 
-    _impl: t.Type[Expression] = attr.ib(kw_only=True, repr=False, cmp=False, alias="impl")
+    _impl: t.Type[Closure] = attr.ib(kw_only=True, repr=False, cmp=False, alias="impl")
 
-    impl: t.Type[Expression] = attr.ib(
+    impl: t.Type[Closure] = attr.ib(
         init=False,
         cmp=False,
         repr=attr.converters.optional(attr.converters.pipe(attrgetter("__name__"), repr)),
     )
-    __call__: t.Type[Expression] = attr.ib(init=False, cmp=False, repr=False)
+    __call__: t.Type[Closure] = attr.ib(init=False, cmp=False, repr=False)
 
     @property
     def isbuiltin(self):
@@ -724,56 +706,53 @@ class OperatorInfo:
     def __str__(self) -> str:
         return self.name
 
-    def trap_method(op, reverse: bool = False):
-        if not op.trap:
-            return
-
+    def get_trap(op, reverse: bool = False):
         match (op.type, not not reverse):
             case (OpType.UNARY, False):
 
-                def method(self: trap):
+                def method(self: Composer):
                     nonlocal op
-                    return self.__class__(self.__expr__() | op())
+                    return self.__class__(self.__zana_compose__() | op())
 
             case (OpType.BINARY, False):
 
-                def method(self: trap, o):
+                def method(self: Composer, o):
                     nonlocal op
-                    if isinstance(o, SupportsExpr):
-                        return self.__class__(self.__expr__() | op(o.__expr__(), lazy=True))
+                    if isinstance(o, Composable):
+                        return self.__class__(
+                            self.__zana_compose__() | op(o.__zana_compose__(), lazy=True)
+                        )
                     else:
-                        return self.__class__(self.__expr__() | op(o))
+                        return self.__class__(self.__zana_compose__() | op(o))
 
             case (OpType.BINARY, True):
 
-                def method(self: trap, o):
+                def method(self: Composer, o):
                     nonlocal op
-                    return self.__class__(to_expr(o) | op(self.__expr__(), lazy=True))
+                    return self.__class__(compose(o) | op(self.__zana_compose__(), lazy=True))
 
             case (OpType.VARIANT, False):  # pragma: no cover
 
-                def method(self: trap, *args):
+                def method(self: Composer, *args):
                     nonlocal op
-                    if any(isinstance(o, SupportsExpr) for o in args):
-                        return self.__class__(self.__expr__() | op(map(to_expr, args), lazy=True))
+                    if any(isinstance(o, Composable) for o in args):
+                        return self.__class__(
+                            self.__zana_compose__() | op(compose(*args), lazy=True)
+                        )
                     else:
-                        return self.__class__(self.__expr__() | op(args))
+                        return self.__class__(self.__zana_compose__() | op(args))
 
             case (OpType.GENERIC, False):
 
-                def method(self: trap, *args, **kwargs):
+                def method(self: Composer, *args, **kwds):
                     nonlocal op
-                    if any(isinstance(o, SupportsExpr) for o in chain(args, kwargs.values())):
+                    if any(isinstance(o, Composable) for o in chain(args, kwds.values())):
                         return self.__class__(
-                            self.__expr__()
-                            | op(
-                                map(to_expr, args),
-                                {k: to_expr(v) for k, v in kwargs.items()},
-                                lazy=True,
-                            )
+                            self.__zana_compose__()
+                            | op(args and compose(*args), kwds and compose(**kwds), lazy=True)
                         )
                     else:
-                        return self.__class__(self.__expr__() | op(args, kwargs))
+                        return self.__class__(self.__zana_compose__() | op(args, kwds))
 
         return method
 
@@ -840,7 +819,7 @@ class OperatorRegistry(abc.Mapping[str, OperatorInfo]):
             assert old is op
             self.__identifiers[op.identifier] = op
             self.__class__.__annotations__[op.identifier] = OperatorInfo
-        trap.__define_operator_methods__(op)
+        magic.__zana_composer_define_traps__(op)
         return op
 
     if t.TYPE_CHECKING:
@@ -1071,3 +1050,6 @@ _T_OpName = t.Literal[
     ops.register("identity", UNARY_OP, zana_ops.identity, impl=Identity, trap=None),
     *(ops.register(name, otp) for name, otp in _builtin_ops.items() if name not in ops),
 ]
+
+
+_IDENTITY = Identity()

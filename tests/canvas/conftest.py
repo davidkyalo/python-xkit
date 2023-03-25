@@ -3,10 +3,10 @@ import typing as t
 import pytest as pyt
 
 from zana.canvas.nodes import (
-    AbcNestedExpr,
-    AbcNestedLazyExpr,
-    AbcRootExpr,
-    AbcRootLazyExpr,
+    AbcNestedClosure,
+    AbcNestedLazyClosure,
+    AbcRootClosure,
+    AbcRootLazyClosure,
     operators,
 )
 from zana.testing.mock import StaticMagicMock
@@ -56,10 +56,10 @@ def expr_kwargs(
 @pyt.fixture()
 def op_abc_map():
     return {
-        ("nested", "eager"): AbcNestedExpr,
-        ("nested", "lazy"): AbcNestedLazyExpr,
-        ("root", "eager"): AbcRootExpr,
-        ("root", "lazy"): AbcRootLazyExpr,
+        ("nested", "eager"): AbcNestedClosure,
+        ("nested", "lazy"): AbcNestedLazyClosure,
+        ("root", "eager"): AbcRootClosure,
+        ("root", "lazy"): AbcRootLazyClosure,
     }
 
 

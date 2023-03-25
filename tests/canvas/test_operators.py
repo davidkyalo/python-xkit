@@ -1,3 +1,4 @@
+import operator as py_operator
 from collections import Counter
 from copy import copy, deepcopy
 from functools import reduce
@@ -9,17 +10,19 @@ from unittest.mock import Mock
 import pytest as pyt
 
 from zana.canvas.nodes import (
-    AbcNestedExpr,
-    AbcNestedLazyExpr,
-    AbcRootExpr,
-    AbcRootLazyExpr,
-    Expression,
+    AbcNestedClosure,
+    AbcNestedLazyClosure,
+    AbcRootClosure,
+    AbcRootLazyClosure,
+    Closure,
     Identity,
     OperatorInfo,
     OpType,
     Ref,
     Return,
-    to_expr,
+    _builtin_ops,
+    compose,
+    operators,
 )
 from zana.testing.mock import StaticMock
 from zana.util import try_import
@@ -51,27 +54,51 @@ def expr_args(op_params: tuple, op: OperatorInfo, expr_mode):
         case (OpType.BINARY, False) | (OpType.VARIANT, False):
             return tuple(op_params[1:2])
         case (OpType.BINARY, True):
-            return tuple(map(to_expr, op_params[1:2]))
+            return tuple(map(compose, op_params[1:2]))
         case (OpType.VARIANT, True):
-            return tuple(tuple(map(to_expr, it)) for it in op_params[1:2])
+            return tuple(tuple(map(compose, it)) for it in op_params[1:2])
         case (OpType.GENERIC, False):
             return tuple(op_params[1:3])
         case (OpType.GENERIC, True):
             args, kwargs = op_params[1:3]
-            return tuple(map(to_expr, args)), dict(zip(kwargs, map(to_expr, kwargs.values())))
+            return tuple(map(compose, args)), dict(zip(kwargs, map(compose, kwargs.values())))
+
+
+_py_ops = {
+    n: d
+    for n, v in vars(py_operator).items()
+    if (d := f"__{n.strip('_')}__") != n and getattr(py_operator, d, ...) is v
+}
+
+
+class test_Registry:
+    def test(self):
+        builtin = _builtin_ops | _py_ops
+        available = {*operators} & {*builtin}
+        print(operators)
+        assert len(builtin) >= 51 <= min(len(available), len(operators))
+
+    def test_compose(self):
+        abc = StaticMock(Closure)
+        xyz = StaticMock()
+        dct = compose(abc=abc, xyz=xyz)
+        assert dct == dict(abc=abc.__zana_compose__.return_value, xyz=Ref(xyz))
+
+        with pyt.raises(TypeError):
+            compose(1, abc=123)
 
 
 class test_Identity:
     def test(self):
         obj = Identity()
         mk = StaticMock()
-        other = StaticMock(Expression)
+        other = StaticMock(Closure)
 
         assert obj.is_root is True
         assert obj.lazy is False
 
-        assert isinstance(obj, AbcRootExpr)
-        assert not isinstance(obj, AbcNestedExpr | AbcNestedLazyExpr | AbcRootLazyExpr)
+        assert isinstance(obj, AbcRootClosure)
+        assert not isinstance(obj, AbcNestedClosure | AbcNestedLazyClosure | AbcRootLazyClosure)
 
         cp, dcp = copy(obj), deepcopy(obj)
         assert obj == cp == dcp
@@ -90,13 +117,13 @@ class test_Ref:
     def test(self):
         mk = StaticMock()
         obj = Ref(mk)
-        other_e, other_o = StaticMock(Expression), StaticMock(Ref)
+        other_e, other_o = StaticMock(Closure), StaticMock(Ref)
 
         assert obj.is_root is True
         assert obj.lazy is False
 
-        assert isinstance(obj, AbcRootExpr)
-        assert not isinstance(obj, AbcNestedExpr | AbcNestedLazyExpr | AbcRootLazyExpr)
+        assert isinstance(obj, AbcRootClosure)
+        assert not isinstance(obj, AbcNestedClosure | AbcNestedLazyClosure | AbcRootLazyClosure)
 
         cp, dcp = copy(obj), deepcopy(obj)
         assert obj == cp == dcp
@@ -110,10 +137,10 @@ class test_Ref:
 
 class test_Return:
     def test(self):
-        mk, mk_src = StaticMock(), StaticMock(Expression)
+        mk, mk_src = StaticMock(), StaticMock(Closure)
         obj = Return(mk)
         arg = Mock()
-        other_e, other_or, other_on = StaticMock(Expression), StaticMock(Return), StaticMock(Return)
+        other_e, other_or, other_on = StaticMock(Closure), StaticMock(Return), StaticMock(Return)
         other_or.is_root = True
         other_on.is_root = False
         other_on.source = mk_src
@@ -121,8 +148,8 @@ class test_Return:
         assert obj.is_root is True
         assert obj.lazy is False
 
-        assert isinstance(obj, AbcRootExpr | AbcNestedExpr)
-        assert not isinstance(obj, AbcNestedLazyExpr | AbcRootLazyExpr)
+        assert isinstance(obj, AbcRootClosure | AbcNestedClosure)
+        assert not isinstance(obj, AbcNestedLazyClosure | AbcRootLazyClosure)
 
         cp, dcp = copy(obj), deepcopy(obj)
         assert obj == cp == dcp
@@ -160,7 +187,7 @@ class test_UnaryOpExpression:
     def op_name(self, request: pyt.FixtureRequest):
         return request.param
 
-    def test(self, expr: Expression, op_params, expr_type):
+    def test(self, expr: Closure, op_params, expr_type):
         this, expected = op_params
         print(expr.name, str(expr), repr(expr), repr(expr.operator), sep="\n  -")
 
@@ -235,7 +262,7 @@ class test_BinaryOpExpression:
             pyt.skip(f"install implementation")
         return name
 
-    def test(self, expr: Expression, op_params, expr_type):
+    def test(self, expr: Closure, op_params, expr_type):
         this, other, expected = op_params
         print(expr.name, str(expr), repr(expr), repr(expr.operator), sep="\n  -")
 
@@ -286,7 +313,7 @@ class test_VariantOpExpression:
     def op_params(self, request: pyt.FixtureRequest, op_name: str):
         return deepcopy(self.operators[op_name][request.param])
 
-    def test(self, expr: Expression, op_params, expr_type):
+    def test(self, expr: Closure, op_params, expr_type):
         this, _, args, expected = op_params
         print(expr.name, str(expr), repr(expr), repr(expr.operator), sep="\n  -")
 
@@ -331,7 +358,7 @@ class test_GenericOpExpression:
     def op_name(self, request: pyt.FixtureRequest):
         return request.param
 
-    def test(self, expr: Expression, op_params, expr_type):
+    def test(self, expr: Closure, op_params, expr_type):
         conf = self.operators[expr.name]
         this, *_, args, kwds, expected = op_params
         print(expr.name, str(expr), repr(expr), repr(expr.operator), sep="\n  -")

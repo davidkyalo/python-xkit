@@ -6,7 +6,13 @@ from types import DynamicClassAttribute
 
 from typing_extensions import Self
 
-__all__ = ["Enum", "IntEnum", "StrEnum", "Flag", "IntFlag",]
+__all__ = [
+    "Enum",
+    "IntEnum",
+    "StrEnum",
+    "Flag",
+    "IntFlag",
+]
 
 
 class EnumMeta(enum.EnumMeta):
@@ -16,11 +22,7 @@ class EnumMeta(enum.EnumMeta):
         labels = []
         for key in classdict._member_names:
             value = classdict[key]
-            if (
-                isinstance(value, (list, tuple))
-                and len(value) > 1
-                and isinstance(value[-1], str)
-            ):
+            if isinstance(value, (list, tuple)) and len(value) > 1 and isinstance(value[-1], str):
                 *value, label = value
                 value = tuple(value)
             else:
@@ -58,6 +60,7 @@ class EnumMeta(enum.EnumMeta):
     def values(cls):
         return [value for value, _ in cls.choices]
 
+
 class Enum(enum.Enum, metaclass=EnumMeta):
     """Class for creating enumerated choices."""
 
@@ -73,12 +76,13 @@ class Enum(enum.Enum, metaclass=EnumMeta):
         return str(self.value)
 
     # A similar format was proposed for Python 3.10.
-    def __repr__(self):
-        return f"{self.__class__.__qualname__}.{self._name_}"
+    # def __repr__(self):
+    #     return f"{self.__class__.__qualname__}.{self._name_}"
 
 
 class IntEnum(int, Enum):
     """Class for creating enumerated integer choices."""
+
     pass
 
 
@@ -89,25 +93,22 @@ class StrEnum(str, Enum):
         return name
 
 
-
 class FlagEnumMeta(EnumMeta):
-   
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         if self._member_map_:
             self._all_ = None
             self.__pseudo_to_inner_members_map__ = {}
-    
+
     @property
     def all(self) -> Self:
         if self._all_ is None:
-            if union := reduce(or_, map(attrgetter('_value_'), self._member_map_.values()), 0):
+            if union := reduce(or_, map(attrgetter("_value_"), self._member_map_.values()), 0):
                 self._all_ = self(union)
         return self._all_
 
 
 class Flag(Enum, enum.Flag, metaclass=FlagEnumMeta):
-    
     all: Self
     _all_: Self
 
@@ -125,7 +126,9 @@ class Flag(Enum, enum.Flag, metaclass=FlagEnumMeta):
     def __get_inner_enum_members__(cls, obj: Self):
         inner = cls.__pseudo_to_inner_members_map__.get(obj)
         if inner is None:
-            inner = cls.__pseudo_to_inner_members_map__.setdefault(obj,  dict.fromkeys(m for m in cls if m in obj).keys())
+            inner = cls.__pseudo_to_inner_members_map__.setdefault(
+                obj, dict.fromkeys(m for m in cls if m in obj).keys()
+            )
         return inner
 
     def __iter__(self):
