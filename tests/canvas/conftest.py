@@ -7,7 +7,7 @@ from zana.canvas import (
     AbcNestedLazyClosure,
     AbcRootClosure,
     AbcRootLazyClosure,
-    operators,
+    operator,
 )
 from zana.testing.mock import StaticMagicMock
 from zana.util.operator import identity
@@ -76,7 +76,7 @@ def op(
     expr_type: t.Literal["nested", "root"],
     expr_mode: t.Literal["eager", "lazy"],
 ):
-    op = operators[op_name]
+    op = operator[op_name]
 
     if not (op_abc and issubclass(op.impl, op_abc)):
         pyt.skip(

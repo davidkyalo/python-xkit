@@ -10,7 +10,7 @@ from zana.canvas import (
     OperatorInfo,
     Ref,
     UnaryClosure,
-    operators,
+    operator,
 )
 from zana.util import subclasses
 
@@ -46,7 +46,7 @@ def run():
     print("\n", "-" * 40, "\n")
     op: OperatorInfo[Closure]
     for i, (tp, ops) in enumerate(
-        groupby(operators.values(), lambda o: o if o.name in ("ref", "identity") else o.type), 1
+        groupby(operator.values(), lambda o: o if o.name in ("ref", "identity") else o.type), 1
     ):
         op, *_ = ops
         indent = " " * 4

@@ -22,7 +22,7 @@ from zana.canvas import (
     Return,
     _builtin_ops,
     compose,
-    operators,
+    operator,
 )
 from zana.testing.mock import StaticMock
 from zana.util import try_import
@@ -74,18 +74,22 @@ _py_ops = {
 class test_Registry:
     def test(self):
         builtin = _builtin_ops | _py_ops
-        available = {*operators} & {*builtin}
-        print(operators)
-        assert len(builtin) >= 51 <= min(len(available), len(operators))
+        available = {*operator} & {*builtin}
+        print(operator)
+        assert len(builtin) >= 51 <= min(len(available), len(operator))
 
     def test_compose(self):
         abc = StaticMock(Closure)
         xyz = StaticMock()
-        dct = compose(abc=abc, xyz=xyz)
+        dct = compose(dict(abc=abc, xyz=xyz), many=True)
+        st = compose({abc, xyz}, many=True)
+        ls = compose([abc, xyz], many=True)
         assert dct == dict(abc=abc.__zana_compose__.return_value, xyz=Ref(xyz))
+        assert st == {abc.__zana_compose__.return_value, Ref(xyz)}
+        assert ls == [abc.__zana_compose__.return_value, Ref(xyz)]
 
         with pyt.raises(TypeError):
-            compose(1, abc=123)
+            compose(1, many=True)
 
 
 class test_Identity:
@@ -236,7 +240,6 @@ class test_BinaryOpExpression:
         "truediv": (60, 15, 60 / 15),
         "xor": ({1, 2, 3}, {3, 4, 5}, {1, 2, 3} ^ {3, 4, 5}),
         "contains": ({1, 2, 3}, 2, True),
-        "getitem": ([1, 2, 3], 1, 2),
         "iadd": ([1, 2, 3], [4, 5], [1, 2, 3] + [4, 5]),
         "iand": ({1, 2, 3, 4}, {1, 2, 5, 7}, {1, 2}),
         "ifloordiv": (33, 5, 33 // 5),
@@ -251,6 +254,7 @@ class test_BinaryOpExpression:
         "itruediv": (60, 15, 60 / 15),
         "ixor": ({1, 2, 3}, {3, 4, 5}, {1, 2, 3} ^ {3, 4, 5}),
         "getattr": (SimpleNamespace(abc=(mk := StaticMock())), "abc", mk),
+        "getitem": ([1, 2, 3], 1, 2),
         "delattr": (SimpleNamespace(abc=StaticMock()), "abc", SimpleNamespace()),
         "delitem": ({"a": 1, "b": 2}, "a", {"b": 2}),
     }
@@ -291,37 +295,25 @@ class test_BinaryOpExpression:
         assert exp_pipe.source.source.source == expr
 
 
-class test_VariantOpExpression:
+class test_MutationClosure:
     operators = {
-        "setattr": [
-            (SimpleNamespace(), ("abc", (mk := StaticMock())), (), SimpleNamespace(abc=mk)),
-            (SimpleNamespace(), ("abc",), ((mk := StaticMock()),), SimpleNamespace(abc=mk)),
-            (SimpleNamespace(), (), ("abc", (mk := StaticMock())), SimpleNamespace(abc=mk)),
-        ],
-        "setitem": [
-            ({"a": 1, "b": 2}, ("x", 123), (), {"a": 1, "b": 2, "x": 123}),
-            ({"a": 1, "b": 2}, ("x",), (123,), {"a": 1, "b": 2, "x": 123}),
-            ({"a": 1, "b": 2}, (), ("x", 123), {"a": 1, "b": 2, "x": 123}),
-        ],
+        "setattr": (SimpleNamespace(), "abc", (mk := StaticMock()), SimpleNamespace(abc=mk)),
+        "setitem": ({"a": 1, "b": 2}, "x", 123, {"a": 1, "b": 2, "x": 123}),
     }
 
     @pyt.fixture(params=[*operators])
     def op_name(self, request: pyt.FixtureRequest):
         return request.param
 
-    @pyt.fixture(params=[0, 1, 2])
-    def op_params(self, request: pyt.FixtureRequest, op_name: str):
-        return deepcopy(self.operators[op_name][request.param])
-
     def test(self, expr: Closure, op_params, expr_type):
-        this, _, args, expected = op_params
+        this, _, arg, expected = op_params
         print(expr.name, str(expr), repr(expr), repr(expr.operator), sep="\n  -")
 
         d_path, d_args, d_kwds = expr.deconstruct()
         cp, dcp = copy(expr), deepcopy(expr)
 
         assert expr == cp == dcp == try_import(d_path)(*d_args, **d_kwds)
-        obj = expr(this, *args)
+        obj = expr(this, arg)
         if expr.isterminal:
             assert obj is None
             obj = this

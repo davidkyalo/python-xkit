@@ -83,24 +83,44 @@ if not t.TYPE_CHECKING:
         )
 
 
-def compose(obj=_notset, /, *args, **kwds) -> "Closure":
-    if not (args or kwds):
-        if obj is _notset:
-            return _IDENTITY
-        elif isinstance(obj, Composable):
-            return obj.__zana_compose__()
-        else:
-            return Ref(obj)
-    elif not kwds:
-        return tuple(compose(a) for it in ((obj,), args) for a in it)
-    elif not args and obj is _notset:
-        return {k: compose(v) for k, v in kwds.items()}
+_TMany = abc.Iterator | abc.Set | abc.Sequence | abc.Mapping
+
+
+@t.overload
+def compose(obj: abc.Sequence | abc.Iterator, *, many: t.Literal[True]) -> list["Closure"]:
+    ...
+
+
+@t.overload
+def compose(obj: abc.Mapping, *, many: t.Literal[True]) -> dict[t.Any, "Closure"]:
+    ...
+
+
+@t.overload
+def compose(obj: abc.Set, *, many: t.Literal[True]) -> set["Closure"]:
+    ...
+
+
+@t.overload
+def compose(obj=..., *, many: t.Literal[False, None] = None) -> "Closure":
+    ...
+
+
+def compose(obj=_notset, *, many=False):
+    if many:
+        if isinstance(obj, (abc.Sequence, abc.Iterator)):
+            return [compose(o) for o in obj]
+        elif isinstance(obj, abc.Mapping):
+            return {k: compose(v) for k, v in obj.items()}
+        elif isinstance(obj, abc.Set):
+            return {compose(v) for v in obj}
+        raise TypeError(f"Expected: {_TMany}. Not {obj.__class__.__name__!r}.")
+    elif obj is _notset:
+        return _IDENTITY
+    elif isinstance(obj, Composable):
+        return obj.__zana_compose__()
     else:
-        raise TypeError(f"positional and keyword arguments are mutually exclusive.")
-
-
-# def compose(obj=_notset) -> "Closure":
-#     return obj.__compose__() if isinstance(obj, Composable) else Ref(obj)
+        return Ref(obj)
 
 
 class OpType(IntEnum):
@@ -166,6 +186,9 @@ class Composable(Interface, t.Generic[_T_Co], parent="Closure"):
 
     @abstractmethod
     def __zana_compose__(self) -> "Closure[_T_Co]":
+        ...
+
+    def _(self, _: ...) -> "Closure[_T_Co]":
         ...
 
 
@@ -326,7 +349,7 @@ class Closure(t.Generic[_T_Co]):
         return self.__concrete__(**kwds)
 
     def deconstruct(self):
-        path = f"{__name__}.operators"
+        path = f"{__name__}.operator"
         fields: list[attr.Attribute] = attr.fields(self.__class__)
         args, kwargs, seen = [], {}, set()
 
@@ -421,6 +444,16 @@ class UnaryClosure(Closure[_T_Co]):
 
     __call_nested_lazy__ = __call_root_lazy__ = None
 
+    @classmethod
+    def get_magic_method(cls):
+        op = cls.operator
+
+        def method(self: Composer):
+            nonlocal op
+            return self.__class__(self.__zana_compose__() | op())
+
+        return method
+
 
 @BINARY_OP._register
 @_define
@@ -441,10 +474,33 @@ class BinaryOpClosure(Closure[_T_Co]):
     def __call_root_lazy__(self, obj, /, *args):
         return self.function(obj, self.operant(obj, *args))
 
+    @classmethod
+    def get_magic_method(cls):
+        op = cls.operator
+
+        def method(self: Composer, o):
+            nonlocal op
+            if isinstance(o, Composable):
+                return self.__class__(self.__zana_compose__() | op(o.__zana_compose__(), lazy=True))
+            else:
+                return self.__class__(self.__zana_compose__() | op(o))
+
+        return method
+
+    @classmethod
+    def get_reverse_magic_method(cls):
+        op = cls.operator
+
+        def method(self: Composer, o):
+            nonlocal op
+            return self.__class__(compose(o) | op(self.__zana_compose__(), lazy=True))
+
+        return method
+
 
 @VARIANT_OP._register
 @_define
-class VariantOpExpression(Closure[_T_Co]):
+class VariantOpExpression(Closure[_T_Co]):  # pragma: no cover
     __slots__ = ()
     __abstract__ = True
     operants: tuple[t.Any] = attr.ib(converter=tuple)
@@ -462,6 +518,29 @@ class VariantOpExpression(Closure[_T_Co]):
     def __call_root_lazy__(self, /, *args):
         pre = args[:1]
         return self.function(*pre, *(op(*pre) for op in self.operants), *args[1:])
+
+
+@_define
+class MutationClosure(Closure[_T_Co]):
+    __slots__ = ()
+    __abstract__ = True
+    operant: t.Any = attr.ib()
+
+    def __call_nested__(self, *args):
+        if pre := len(args) > 1 or ():
+            pre, args = args[:1], args[1:]
+        return self.function(self.source(*pre), self.operant, *args)
+
+    def __call_nested_lazy__(self, /, *args):
+        if pre := len(args) > 1 or ():
+            pre, args = args[:1], args[1:]
+        return self.function(self.source(*pre), self.operant(*pre), *args)
+
+    def __call_root__(self, obj, /, *args):
+        return self.function(obj, self.operant, *args)
+
+    def __call_root_lazy__(self, obj, /, *args):
+        return self.function(obj, self.operant(obj), *args)
 
 
 @GENERIC_OP._register
@@ -516,12 +595,35 @@ class GenericClosure(Closure[_T_Co]):
             **kw,
         )
 
+    @classmethod
+    def get_magic_method(cls):
+        op = cls.operator
+
+        def method(self: Composer, *args, **kwds):
+            nonlocal op
+            if any(isinstance(o, Composable) for o in chain(args, kwds.values())):
+                return self.__class__(
+                    self.__zana_compose__()
+                    | op(
+                        args and compose(args, many=True),
+                        kwds and compose(kwds, many=True),
+                        lazy=True,
+                    )
+                )
+            else:
+                return self.__class__(self.__zana_compose__() | op(args, kwds))
+
+        return method
+
 
 @Composable.register
 class Composer(t.Generic[_T_Co]):
     __slots__ = ("__zana_composer_src__", "__weakref__")
-    __zana_composer_src__: Closure[_T_Co]
-
+    __zana_composer_src__: UnaryClosure[_T_Co] | BinaryOpClosure[_T_Co] | GenericClosure[
+        _T_Co
+    ] | Closure[_T_Co]
+    __zana_compose_arg__: t.ClassVar = ...
+    __zana_compose_attr__: t.ClassVar = "_"
     __class_getitem__ = classmethod(GenericAlias)
 
     def __new__(cls, src: Closure[_T_Co] = _notset) -> _T_Co | Composable[_T_Co]:
@@ -544,18 +646,32 @@ class Composer(t.Generic[_T_Co]):
     def __deepcopy__(self, memo):
         return type(self)(deepcopy(self.__zana_composer_src__, memo))
 
+    def __zana_composer_call__(self, *args, **kwds) -> _T_Co | Composable[_T_Co]:
+        if not kwds and len(args) == 1 and args[0] == self.__zana_compose_arg__:
+            src = self.__zana_composer_src__
+            if src.operator is ops.getattr and src.operant == self.__zana_compose_attr__:
+                return src.source
+        return self.__zana_composer_call__(*args, **kwds)
+
     @classmethod
     def __zana_composer_define_traps__(cls: type[Self], op: "OperatorInfo"):
         mro = [b.__dict__ for b in cls.__mro__ if issubclass(b, Composer)]
-        for name, reverse in [(op.trap_name, False), (op.reverse_trap_name, True)]:
+        methods = [
+            (op.trap_name, getattr(op.impl, "get_magic_method", ...)),
+            (op.reverse_trap_name, getattr(op.impl, "get_reverse_magic_method", ...)),
+        ]
+        for name, factory in methods:
             if not (name and all(b.get(name) in (None, ...) for b in mro)):
                 return
-            elif method := op.get_trap(reverse=reverse):
-                method.__name__ = name
-                method.__qualname__ = f"{cls.__qualname__}.{name}"
-                method.__module__ = f"{cls.__module__}"
+            method = factory()
+            method.__name__ = name
+            method.__qualname__ = f"{cls.__qualname__}.{name}"
+            method.__module__ = f"{cls.__module__}"
 
-                setattr(cls, name, method)
+            if name == "__call__":
+                setattr(cls, name, cls.__zana_composer_call__)
+                name = "__zana_composer_call__"
+            setattr(cls, name, method)
 
 
 class magic(Composer[_T_Co]):
@@ -706,55 +822,59 @@ class OperatorInfo:
     def __str__(self) -> str:
         return self.name
 
-    def get_trap(op, reverse: bool = False):
-        match (op.type, not not reverse):
-            case (OpType.UNARY, False):
+    # def get_trap(op, reverse: bool = False):
+    #     match (op.type, not not reverse):
+    #         case (OpType.UNARY, False):
 
-                def method(self: Composer):
-                    nonlocal op
-                    return self.__class__(self.__zana_compose__() | op())
+    #             def method(self: Composer):
+    #                 nonlocal op
+    #                 return self.__class__(self.__zana_compose__() | op())
 
-            case (OpType.BINARY, False):
+    #         case (OpType.BINARY, False):
 
-                def method(self: Composer, o):
-                    nonlocal op
-                    if isinstance(o, Composable):
-                        return self.__class__(
-                            self.__zana_compose__() | op(o.__zana_compose__(), lazy=True)
-                        )
-                    else:
-                        return self.__class__(self.__zana_compose__() | op(o))
+    #             def method(self: Composer, o):
+    #                 nonlocal op
+    #                 if isinstance(o, Composable):
+    #                     return self.__class__(
+    #                         self.__zana_compose__() | op(o.__zana_compose__(), lazy=True)
+    #                     )
+    #                 else:
+    #                     return self.__class__(self.__zana_compose__() | op(o))
 
-            case (OpType.BINARY, True):
+    #         case (OpType.BINARY, True):
 
-                def method(self: Composer, o):
-                    nonlocal op
-                    return self.__class__(compose(o) | op(self.__zana_compose__(), lazy=True))
+    #             def method(self: Composer, o):
+    #                 nonlocal op
+    #                 return self.__class__(compose(o) | op(self.__zana_compose__(), lazy=True))
 
-            case (OpType.VARIANT, False):  # pragma: no cover
+    #         case (OpType.VARIANT, False):  # pragma: no cover
 
-                def method(self: Composer, *args):
-                    nonlocal op
-                    if any(isinstance(o, Composable) for o in args):
-                        return self.__class__(
-                            self.__zana_compose__() | op(compose(*args), lazy=True)
-                        )
-                    else:
-                        return self.__class__(self.__zana_compose__() | op(args))
+    #             def method(self: Composer, *args):
+    #                 nonlocal op
+    #                 if any(isinstance(o, Composable) for o in args):
+    #                     return self.__class__(
+    #                         self.__zana_compose__() | op(compose(args, many=True), lazy=True)
+    #                     )
+    #                 else:
+    #                     return self.__class__(self.__zana_compose__() | op(args))
 
-            case (OpType.GENERIC, False):
+    #         case (OpType.GENERIC, False):
 
-                def method(self: Composer, *args, **kwds):
-                    nonlocal op
-                    if any(isinstance(o, Composable) for o in chain(args, kwds.values())):
-                        return self.__class__(
-                            self.__zana_compose__()
-                            | op(args and compose(*args), kwds and compose(**kwds), lazy=True)
-                        )
-                    else:
-                        return self.__class__(self.__zana_compose__() | op(args, kwds))
+    #             def method(self: Composer, *args, **kwds):
+    #                 nonlocal op
+    #                 if any(isinstance(o, Composable) for o in chain(args, kwds.values())):
+    #                     return self.__class__(
+    #                         self.__zana_compose__()
+    #                         | op(
+    #                             args and compose(args, many=True),
+    #                             kwds and compose(kwds, many=True),
+    #                             lazy=True,
+    #                         )
+    #                     )
+    #                 else:
+    #                     return self.__class__(self.__zana_compose__() | op(args, kwds))
 
-        return method
+    #     return method
 
 
 class OperatorRegistry(abc.Mapping[str, OperatorInfo]):
@@ -878,7 +998,7 @@ class OperatorRegistry(abc.Mapping[str, OperatorInfo]):
         ref: OperatorInfo
 
 
-operators = ops = OperatorRegistry()
+operator = ops = OperatorRegistry()
 
 
 _builtin_unary_ops = FrozenDict.fromkeys(
@@ -942,13 +1062,7 @@ _builtin_binary_ops = FrozenDict.fromkeys(
 )
 
 
-_builtin_variant_ops = FrozenDict.fromkeys(
-    [
-        "setitem",
-        "setattr",
-    ],
-    VARIANT_OP,
-)
+_builtin_variant_ops = FrozenDict()
 
 
 _builtin_generic_ops = FrozenDict.fromkeys(
@@ -956,6 +1070,8 @@ _builtin_generic_ops = FrozenDict.fromkeys(
         # "attrgetter",
         # "itemgetter",
         # "methodcaller",
+        "setitem",
+        "setattr",
         "call",
         "ref",
         "return",
@@ -1048,8 +1164,12 @@ _T_OpName = t.Literal[
     ops.register("ref", GENERIC_OP, zana_ops.none, impl=Ref, trap=None),
     ops.register("return", GENERIC_OP, zana_ops.none, impl=Return, trap=None),
     ops.register("identity", UNARY_OP, zana_ops.identity, impl=Identity, trap=None),
+    ops.register("setattr", BINARY_OP, zana_ops.setattr, impl=MutationClosure),
+    ops.register("setitem", BINARY_OP, zana_ops.setitem, impl=MutationClosure),
     *(ops.register(name, otp) for name, otp in _builtin_ops.items() if name not in ops),
 ]
 
 
 _IDENTITY = Identity()
+
+this = _THIS = magic[_T_Co]()

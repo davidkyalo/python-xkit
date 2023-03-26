@@ -1,6 +1,6 @@
 from copy import copy, deepcopy
 
-from zana.canvas import Ref, compose, magic, operators
+from zana.canvas import Ref, compose, magic, operator
 from zana.testing.mock import StaticMagicMock, StaticMock, StaticPropertyMock
 
 
@@ -23,7 +23,7 @@ class test_integration:
         subr = +mk_bar_rv == src
 
         expr, exprr = compose(sub), compose(subr)
-        exprl = compose(src) | operators.is_(compose(src), lazy=True)
+        exprl = compose(src) | operator.is_(compose(src), lazy=True)
 
         print("VARS", *(f" - {k:16}: {v and v or v!r}" for k, v in vars().items()), "", sep="\n ")
         cp_s, dcp_s = compose(copy(sub)), compose(deepcopy(sub))
@@ -39,7 +39,7 @@ class test_integration:
         assert compose(src != mk_foo)(mk) is True
 
         mk_bar.reset_mock()
-        op = compose(foo_rv) | operators.setattr(("bar",))
+        op = compose(foo_rv) | operator.setattr("bar")
         mk_val = StaticMock()
         op(mk, mk_val)
         mk_bar.assert_called_once_with(mk_val)
