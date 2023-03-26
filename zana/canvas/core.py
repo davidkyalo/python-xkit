@@ -1,5 +1,4 @@
 import keyword
-import math
 import operator as py_operator
 import typing as t
 from abc import abstractmethod
@@ -15,14 +14,7 @@ import attr
 from typing_extensions import Self
 
 from zana.types import Descriptor, Interface
-from zana.types.collections import (
-    Composite,
-    DefaultKeyDict,
-    FallbackDict,
-    FrozenDict,
-    ReadonlyDict,
-    UserTuple,
-)
+from zana.types.collections import Composite, FallbackDict, FrozenDict, UserTuple
 from zana.types.enums import IntEnum
 from zana.util import class_property
 from zana.util import operator as zana_ops
@@ -64,7 +56,9 @@ def _field_transformer(fn=None):
     def hook(cls: type, fields: list[attr.Attribute]):
         fields = fn(cls, fields) if fn else fields
         cls.__positional_attrs__ = {
-            f.alias or f.name.strip("_"): f.name for f in fields if f.init and not f.kw_only
+            f.alias or f.name.lstrip("_"): f.name
+            for f in fields
+            if f.init and not f.kw_only and f.metadata.get("var_pas")
         }
         return fields
 
@@ -81,6 +75,7 @@ if not t.TYPE_CHECKING:
             **dict(
                 frozen=True,
                 init=not no_init,
+                # cache_hash=True,
                 auto_attribs=auto_attribs,
                 field_transformer=_field_transformer(field_transformer),
             )
@@ -92,19 +87,17 @@ _TMany = abc.Iterator | abc.Set | abc.Sequence | abc.Mapping
 
 
 @t.overload
-def compose(
-    obj: abc.Sequence | abc.Iterator, *, many: t.Literal[True], depth: int = 1
-) -> list["Closure"]:
+def compose(obj: abc.Sequence | abc.Iterator, *, many: t.Literal[True]) -> list["Closure"]:
     ...
 
 
 @t.overload
-def compose(obj: abc.Mapping, *, many: t.Literal[True], depth: int = 1) -> dict[t.Any, "Closure"]:
+def compose(obj: abc.Mapping, *, many: t.Literal[True]) -> dict[t.Any, "Closure"]:
     ...
 
 
 @t.overload
-def compose(obj: abc.Set, *, many: t.Literal[True], depth: int = 1) -> set["Closure"]:
+def compose(obj: abc.Set, *, many: t.Literal[True]) -> set["Closure"]:
     ...
 
 
@@ -113,22 +106,45 @@ def compose(obj=..., *, many: t.Literal[False, None] = None) -> "Closure":
     ...
 
 
-def compose(obj=_notset, **kw):
-    if kw.get("many") and kw.setdefault("depth", 1) > 0:
-        kw["depth"] -= 1
+def compose(obj=_notset, *, many=False):
+    if many:
         if isinstance(obj, (abc.Sequence, abc.Iterator)):
-            return [compose(o, **kw) for o in obj]
+            return [compose(o) for o in obj]
         elif isinstance(obj, abc.Mapping):
-            return {k: compose(v, **kw) for k, v in obj.items()}
+            return {k: compose(v) for k, v in obj.items()}
         elif isinstance(obj, abc.Set):
-            return {compose(v, **kw) for v in obj}
+            return {compose(v) for v in obj}
         raise TypeError(f"Expected: {_TMany}. Not {obj.__class__.__name__!r}.")
     elif obj is _notset:
-        return Identity()
+        return _IDENTITY
     elif isinstance(obj, Composable):
         return obj.__zana_compose__()
     else:
-        return Val(obj)
+        return Ref(obj)
+
+
+class OpType(IntEnum):
+    UNARY = 1, "Unary (1 operant)"
+    BINARY = 2, "Binary (2 operants)"
+    VARIANT = 3, "Variant (* operants)"
+    GENERIC = 4, "Generic (allow args and kwargs)"
+    _impl_map_: abc.Mapping[Self, type["Closure"]]
+
+    @property
+    def implementation(self):
+        return self.__class__._impl_map_[self]
+
+    def _register(self, impl):
+        assert impl is self.__class__._impl_map_.setdefault(self, impl)
+        return impl
+
+
+OpType._impl_map_ = {}
+
+UNARY_OP = OpType.UNARY
+BINARY_OP = OpType.BINARY
+VARIANT_OP = OpType.VARIANT
+GENERIC_OP = OpType.GENERIC
 
 
 class AbcNestedClosure(Interface[_T_Co], parent="Closure"):
@@ -182,7 +198,7 @@ class Closure(t.Generic[_T_Co]):
     __class_getitem__ = classmethod(GenericAlias)
     __positional_attrs__: t.ClassVar[dict[str, str]] = ...
     __base__: t.ClassVar[type[Self]]
-    operator: t.ClassVar["Operator"] = None
+    operator: t.ClassVar["OperatorInfo"] = None
     function: t.ClassVar[abc.Callable] = None
     __abstract__: t.ClassVar[abc.Callable] = True
     __final__: t.ClassVar[abc.Callable] = False
@@ -200,9 +216,6 @@ class Closure(t.Generic[_T_Co]):
     _nested_lazy_type_: t.ClassVar[type[Self]] = None
     _root_type_: t.ClassVar[type[Self]] = None
     _root_lazy_type_: t.ClassVar[type[Self]] = None
-
-    min_nargs: t.ClassVar = 0
-    max_nargs: t.ClassVar = 0
 
     @property
     def name(self):
@@ -259,21 +272,17 @@ class Closure(t.Generic[_T_Co]):
 
     def __new__(cls, /, *a, lazy=None, **kw):
         if cls is cls.__concrete__:
-            cls = cls.get_dispatch(None is kw.get("source"), lazy)
-        return cls._new_(*a, **kw)
+            match (kw.get("source") is not None, not lazy):
+                case (True, True):
+                    cls = cls._nested_type_
+                case (True, False):
+                    cls = cls._nested_lazy_type_
+                case (False, True):
+                    cls = cls._root_type_
+                case (False, False):
+                    cls = cls._root_lazy_type_
 
-    @classmethod
-    def get_dispatch(cls, is_root: bool = True, lazy: bool = False):
-        match (not not is_root, not not lazy):
-            case (True, False):
-                klass = cls._root_type_
-            case (True, True):
-                klass = cls._root_lazy_type_
-            case (False, False):
-                klass = cls._nested_type_
-            case (False, True):
-                klass = cls._nested_lazy_type_
-        return klass
+        return cls._new_(*a, **kw)
 
     @classmethod
     def _new_(cls, /, *a, **kw):
@@ -323,22 +332,21 @@ class Closure(t.Generic[_T_Co]):
         return self.__or__(o)
 
     def pipe(self, op: Self | "Closure", *ops: Self | "Closure"):
-        return (
-            reduce(zana_ops.or_, map(compose, ops), self | compose(op))
-            if ops
-            else self | compose(op) | reduce(zana_ops.or_, map(compose, ops), Identity())
-        )
+        return reduce(zana_ops.or_, ops, self | op) if ops else self | op
+
+    # def rpipe(self, op: Self | "Closure", *ops: Self | "Closure"):
+    #     return reduce(zana_ops.or_, ops, op) | self if ops else op | self
 
     def lift(self, source: Self | "Closure"):
         if not self.is_root:
             source |= self.source
 
-        attrs, kwds = attr.fields(self.__class__), {"source": source}
+        attrs, kwds = attr.fields(self.__class__), {"source": source, "lazy": self.lazy}
         for a in attrs:
             if a.init and a.alias not in kwds:
                 kwds[a.alias] = getattr(self, a.name)
 
-        return self.get_dispatch(False, self.lazy)(**kwds)
+        return self.__concrete__(**kwds)
 
     def deconstruct(self):
         path = f"{__name__}.operator"
@@ -371,16 +379,13 @@ class Closure(t.Generic[_T_Co]):
 
 
 @_define
-class Val(Closure[_T_Co]):
+class Ref(Closure[_T_Co]):
     __slots__ = ()
     __final__ = True
-    value: _T_Co = attr.ib()
+    obj: _T_Co = attr.ib()
 
-    min_nargs: t.ClassVar = 1
-    max_nargs: t.ClassVar = 1
-
-    def __call_root__(self, *a) -> _T_Co:
-        return self.value
+    def __call_root__(self, obj=None, /) -> _T_Co:
+        return self.obj
 
     __call_nested__ = __call_nested_lazy__ = __call_root_lazy__ = None
 
@@ -389,23 +394,21 @@ class Val(Closure[_T_Co]):
 
 
 @_define
-class Return(Val[_T_Co]):
+class Return(Ref[_T_Co]):
     __slots__ = ()
     __final__ = True
-
-    if not t.TYPE_CHECKING:
-        operator = None
+    operator = None
 
     def __call_nested__(self, *a) -> _T_Co:
         self.source(*a)
-        return self.value
+        return self.obj
 
     def lift(self, source: Self | "Closure"):
-        if isinstance(source, Val):
+        if isinstance(source, Ref):
             if source.is_root:
                 return self
             source = source.source
-        return super(Val, self).lift(source)
+        return super(Ref, self).lift(source)
 
 
 @_define
@@ -427,6 +430,7 @@ class Identity(Closure[_T_Co]):
         return source
 
 
+@UNARY_OP._register
 @_define
 class UnaryClosure(Closure[_T_Co]):
     __slots__ = ()
@@ -451,14 +455,11 @@ class UnaryClosure(Closure[_T_Co]):
         return method
 
 
+@BINARY_OP._register
 @_define
-class BinaryClosure(Closure[_T_Co]):
+class BinaryOpClosure(Closure[_T_Co]):
     __slots__ = ()
     __abstract__ = True
-
-    min_nargs: t.ClassVar = 1
-    max_nargs: t.ClassVar = 1
-
     operant: t.Any = attr.ib()
 
     def __call_nested__(self, /, *args):
@@ -497,8 +498,9 @@ class BinaryClosure(Closure[_T_Co]):
         return method
 
 
+@VARIANT_OP._register
 @_define
-class VariantExpression(Closure[_T_Co]):  # pragma: no cover
+class VariantOpExpression(Closure[_T_Co]):  # pragma: no cover
     __slots__ = ()
     __abstract__ = True
     operants: tuple[t.Any] = attr.ib(converter=tuple)
@@ -522,10 +524,6 @@ class VariantExpression(Closure[_T_Co]):  # pragma: no cover
 class MutationClosure(Closure[_T_Co]):
     __slots__ = ()
     __abstract__ = True
-
-    min_nargs: t.ClassVar = 1
-    max_nargs: t.ClassVar = 1
-
     operant: t.Any = attr.ib()
 
     def __call_nested__(self, *args):
@@ -545,14 +543,11 @@ class MutationClosure(Closure[_T_Co]):
         return self.function(obj, self.operant(obj), *args)
 
 
+@GENERIC_OP._register
 @_define
 class GenericClosure(Closure[_T_Co]):
     __slots__ = ()
     __abstract__ = True
-
-    min_nargs: t.ClassVar = 0
-    max_nargs: t.ClassVar = math.inf
-
     args: tuple[t.Any] = attr.ib(converter=tuple, default=())
     kwargs: FrozenDict[str, t.Any] = attr.ib(default=FrozenDict(), converter=FrozenDict)
     bind: int | bool = attr.ib(default=1, converter=int)
@@ -624,7 +619,7 @@ class GenericClosure(Closure[_T_Co]):
 @Composable.register
 class Composer(t.Generic[_T_Co]):
     __slots__ = ("__zana_composer_src__", "__weakref__")
-    __zana_composer_src__: UnaryClosure[_T_Co] | BinaryClosure[_T_Co] | GenericClosure[
+    __zana_composer_src__: UnaryClosure[_T_Co] | BinaryOpClosure[_T_Co] | GenericClosure[
         _T_Co
     ] | Closure[_T_Co]
     __zana_compose_arg__: t.ClassVar = ...
@@ -640,7 +635,7 @@ class Composer(t.Generic[_T_Co]):
         return self.__zana_composer_src__
 
     def __bool__(self):
-        return not isinstance(self.__zana_composer_src__, Identity)
+        return not (self.__zana_composer_src__ is _IDENTITY)
 
     def __repr__(self):
         return f"{self.__class__.__name__}({str(self.__zana_compose__())!r})"
@@ -652,14 +647,14 @@ class Composer(t.Generic[_T_Co]):
         return type(self)(deepcopy(self.__zana_composer_src__, memo))
 
     def __zana_composer_call__(self, *args, **kwds) -> _T_Co | Composable[_T_Co]:
-        if not kwds and len(args) == 1 and args[0] is self.__zana_compose_arg__:
+        if not kwds and len(args) == 1 and args[0] == self.__zana_compose_arg__:
             src = self.__zana_composer_src__
             if src.operator is ops.getattr and src.operant == self.__zana_compose_attr__:
                 return src.source
         return self.__zana_composer_call__(*args, **kwds)
 
     @classmethod
-    def __zana_composer_define_traps__(cls: type[Self], op: "Operator"):
+    def __zana_composer_define_traps__(cls: type[Self], op: "OperatorInfo"):
         mro = [b.__dict__ for b in cls.__mro__ if issubclass(b, Composer)]
         methods = [
             (op.trap_name, getattr(op.impl, "get_magic_method", None)),
@@ -695,10 +690,15 @@ class magic(Composer[_T_Co]):
 
 
 @attr.define(frozen=True, cache_hash=True)
-class Operator:
+class OperatorInfo:
     __slots__ = ()
     name: str = attr.ib(validator=[attr.validators.instance_of(str), attr.validators.min_len(1)])
     identifier: str = attr.ib(init=False, repr=False, cmp=False)
+    type: OpType = attr.ib(
+        converter=OpType,
+        cmp=False,
+        repr=attr.converters.pipe(attrgetter("name"), repr),
+    )
     function: abc.Callable = attr.ib(
         cmp=False,
         validator=attr.validators.optional(attr.validators.is_callable()),
@@ -718,18 +718,13 @@ class Operator:
         cmp=False,
         repr=attr.converters.optional(attr.converters.pipe(attrgetter("__name__"), repr)),
     )
-
-    _aliases: tuple = attr.ib(
-        default=(), repr=False, kw_only=True, converter=tuple, alias="aliases"
-    )
-    aliases: tuple = attr.ib(init=False)
     __call__: t.Type[Closure] = attr.ib(init=False, cmp=False, repr=False)
 
-    if True:
+    @property
+    def isbuiltin(self):
+        return self.name in _builtin_ops
 
-        @property
-        def isbuiltin(self):
-            return self.name in ALL_OPERATORS
+    if True:
 
         @trap.default
         def _default_trap(self):
@@ -750,13 +745,12 @@ class Operator:
         def _default_isinplace(self):
             name = self.name
             return self.isterminal or (
-                name in BINARY_OPERATORS and name[:1] == "i" and name[1:] in BINARY_OPERATORS
+                self.type is BINARY_OP and name[:1] == "i" and name[1:] in _builtin_binary_ops
             )
 
         @reverse.default
         def _init_reversible(self):
-            name = self.name
-            return all(v in BINARY_OPERATORS for v in (name, f"i{name}"))
+            return self.type is BINARY_OP and f"i{self.name}" in _builtin_binary_ops
 
         @reverse_trap_name.default
         def _init_reverse_magic_name(self):
@@ -773,16 +767,8 @@ class Operator:
                     name = f"{name}_"
                 return name
 
-        @aliases.default
-        def _init_aliases(self):
-            return tuple(
-                dict.fromkeys(
-                    k for it in ([self.name, self.identifier], self._aliases) for k in it if k
-                )
-            )
-
         @function.default
-        def _default_function(self):
+        def _init_callback(self):
             name = self.identifier or self.name
             for mod in _operator_modules:
                 if hasattr(mod, name):
@@ -790,7 +776,7 @@ class Operator:
 
         @_impl.default
         def _default_impl(self):
-            return GenericClosure
+            return self.type.implementation
 
         @impl.default
         def _init_impl(self):
@@ -814,7 +800,7 @@ class Operator:
             )
             return base
 
-        name = f"{self.identifier or base.__name__}_closure"
+        name = f"{self.identifier or base.__name__}_operation"
         name = "".join(map(methodcaller("capitalize"), name.split("_")))
         ns = {
             "__slots__": (),
@@ -836,27 +822,19 @@ class Operator:
         return self.name
 
 
-class _OperatorDict(FallbackDict[str, Operator]):
-    def __missing__(self, key):
-        if (aka := self._default[key]) != key:
-            return self[aka]
-        raise KeyError(key)
+class OperatorRegistry(abc.Mapping[str, OperatorInfo]):
+    __slots__ = (
+        "__identifiers",
+        "__registry",
+        "__weakref__",
+    )
 
-
-class OperatorRegistry(abc.Mapping[str, Operator]):
-    __slots__ = ("__aliases", "__identifiers", "__registry", "__weakref__")
-
-    __registry: dict[str, Operator]
-    __identifiers: dict[str, Operator]
+    __registry: dict[str, OperatorInfo]
+    __identifiers: dict[str, OperatorInfo]
 
     def __init__(self) -> None:
         self.__identifiers = {}
-        self.__aliases = DefaultKeyDict()
-        self.__registry = _OperatorDict((), self.__aliases)
-
-    @property
-    def __aliases__(self):
-        return self
+        self.__registry = FallbackDict((), self.__identifiers)
 
     def __getattr__(self, name: str):
         try:
@@ -865,11 +843,11 @@ class OperatorRegistry(abc.Mapping[str, Operator]):
             raise AttributeError(name) from None
 
     @t.overload
-    def __getitem__(cls, key: "_T_OpName") -> Operator:
+    def __getitem__(cls, key: "_T_OpName") -> OperatorInfo:
         ...
 
     @t.overload
-    def __getitem__(cls, key: str) -> Operator:
+    def __getitem__(cls, key: str) -> OperatorInfo:
         ...
 
     def __getitem__(cls, key):
@@ -885,17 +863,17 @@ class OperatorRegistry(abc.Mapping[str, Operator]):
         return self[operator](*args, **kwargs)
 
     @t.overload
-    def register(self, op: Operator) -> Operator:
+    def register(self, op: OperatorInfo) -> OperatorInfo:
         ...
 
-    register = t.overload(type[Operator])
+    register = t.overload(type[OperatorInfo])
 
-    def register(self, op: str, *args, **kwargs) -> Operator:
+    def register(self, op: str, *args, **kwargs) -> OperatorInfo:
         ...
 
     def register(self, op, *args, **kwargs):
         if isinstance(op, str):
-            op = Operator(op, *args, **kwargs)
+            op = OperatorInfo(op, *args, **kwargs)
         registry = self.__registry
         assert op.name not in registry or registry[op.name] is op
         assert not op.identifier or registry.get(op.identifier, op) is op
@@ -904,77 +882,73 @@ class OperatorRegistry(abc.Mapping[str, Operator]):
         if op.identifier:
             old = self.__identifiers.setdefault(op.identifier, op)
             assert old is op
-            self.__class__.__annotations__[op.identifier] = Operator
-
-        aliases, name = self.__aliases, op.name
-        for aka in op.aliases:
-            old = aliases.setdefault(aka, name)
-            assert old == name
+            # self.__identifiers[op.identifier] = op
+            self.__class__.__annotations__[op.identifier] = OperatorInfo
 
         magic.__zana_composer_define_traps__(op)
 
         return op
 
     if t.TYPE_CHECKING:
-        register: type[Operator]
+        register: type[OperatorInfo]
 
-        identity: Operator
-        not_: Operator
-        truth: Operator
-        abs: Operator
-        index: Operator
-        invert: Operator
-        neg: Operator
-        pos: Operator
-        is_: Operator
-        is_not: Operator
-        lt: Operator
-        le: Operator
-        eq: Operator
-        ne: Operator
-        ge: Operator
-        gt: Operator
-        add: Operator
-        and_: Operator
-        floordiv: Operator
-        lshift: Operator
-        mod: Operator
-        mul: Operator
-        matmul: Operator
-        or_: Operator
-        pow: Operator
-        rshift: Operator
-        sub: Operator
-        truediv: Operator
-        xor: Operator
-        contains: Operator
-        getitem: Operator
-        getattr: Operator
-        iadd: Operator
-        iand: Operator
-        ifloordiv: Operator
-        ilshift: Operator
-        imod: Operator
-        imul: Operator
-        imatmul: Operator
-        ior: Operator
-        ipow: Operator
-        irshift: Operator
-        isub: Operator
-        itruediv: Operator
-        ixor: Operator
-        delattr: Operator
-        delitem: Operator
-        setitem: Operator
-        setattr: Operator
-        call: Operator
-        val: Operator
+        identity: OperatorInfo
+        not_: OperatorInfo
+        truth: OperatorInfo
+        abs: OperatorInfo
+        index: OperatorInfo
+        invert: OperatorInfo
+        neg: OperatorInfo
+        pos: OperatorInfo
+        is_: OperatorInfo
+        is_not: OperatorInfo
+        lt: OperatorInfo
+        le: OperatorInfo
+        eq: OperatorInfo
+        ne: OperatorInfo
+        ge: OperatorInfo
+        gt: OperatorInfo
+        add: OperatorInfo
+        and_: OperatorInfo
+        floordiv: OperatorInfo
+        lshift: OperatorInfo
+        mod: OperatorInfo
+        mul: OperatorInfo
+        matmul: OperatorInfo
+        or_: OperatorInfo
+        pow: OperatorInfo
+        rshift: OperatorInfo
+        sub: OperatorInfo
+        truediv: OperatorInfo
+        xor: OperatorInfo
+        contains: OperatorInfo
+        getitem: OperatorInfo
+        getattr: OperatorInfo
+        iadd: OperatorInfo
+        iand: OperatorInfo
+        ifloordiv: OperatorInfo
+        ilshift: OperatorInfo
+        imod: OperatorInfo
+        imul: OperatorInfo
+        imatmul: OperatorInfo
+        ior: OperatorInfo
+        ipow: OperatorInfo
+        irshift: OperatorInfo
+        isub: OperatorInfo
+        itruediv: OperatorInfo
+        ixor: OperatorInfo
+        delattr: OperatorInfo
+        delitem: OperatorInfo
+        setitem: OperatorInfo
+        setattr: OperatorInfo
+        call: OperatorInfo
+        ref: OperatorInfo
 
 
 operator = ops = OperatorRegistry()
 
 
-UNARY_OPERATORS = FrozenDict.fromkeys(
+_builtin_unary_ops = FrozenDict.fromkeys(
     (
         "identity",
         "not",
@@ -985,11 +959,11 @@ UNARY_OPERATORS = FrozenDict.fromkeys(
         "neg",
         "pos",
     ),
-    FrozenDict({"impl": UnaryClosure}),
+    UNARY_OP,
 )
 
 
-BINARY_OPERATORS = FrozenDict.fromkeys(
+_builtin_binary_ops = FrozenDict.fromkeys(
     (
         "is",
         "is_not",
@@ -1031,33 +1005,27 @@ BINARY_OPERATORS = FrozenDict.fromkeys(
         "delattr",
         "delitem",
     ),
-    FrozenDict({"impl": BinaryClosure}),
+    BINARY_OP,
 )
 
 
-MUTATOR_OPERATORS = FrozenDict.fromkeys(
+_builtin_variant_ops = FrozenDict()
+
+
+_builtin_generic_ops = FrozenDict.fromkeys(
     [
+        # "attrgetter",
+        # "itemgetter",
+        # "methodcaller",
         "setitem",
         "setattr",
-    ],
-    FrozenDict({"impl": MutationClosure}),
-)
-
-
-GENERIC_OPERATORS = FrozenDict.fromkeys(
-    [
         "call",
-        "val",
+        "ref",
         "return",
     ],
-    FrozenDict({"impl": GenericClosure}),
+    GENERIC_OP,
 )
 
-ALL_OPERATORS = UNARY_OPERATORS | BINARY_OPERATORS | MUTATOR_OPERATORS | GENERIC_OPERATORS
-
-assert len(ALL_OPERATORS) == sum(
-    map(len, (UNARY_OPERATORS, BINARY_OPERATORS, MUTATOR_OPERATORS, GENERIC_OPERATORS))
-)
 
 _terminal_ops = {
     "setattr",
@@ -1077,6 +1045,11 @@ _non_trappable_ops = {
     "itemgetter",
     "methodcaller",
 } | _terminal_ops
+
+
+_builtin_ops = (
+    _builtin_unary_ops | _builtin_binary_ops | _builtin_variant_ops | _builtin_generic_ops
+)
 
 
 _T_OpName = t.Literal[
@@ -1130,17 +1103,20 @@ _T_OpName = t.Literal[
     "setitem",
     "setattr",
     "call",
-    "val",
+    "ref",
 ]
 
 
 [
-    ops.register("val", zana_ops.none, impl=Val, trap=None),
-    ops.register("return", zana_ops.none, impl=Return, trap=None),
-    ops.register("identity", zana_ops.identity, impl=Identity, trap=None),
-    ops.register("setattr", zana_ops.setattr, impl=MutationClosure),
-    ops.register("setitem", zana_ops.setitem, impl=MutationClosure),
-    *(ops.register(name, **kwds) for name, kwds in ALL_OPERATORS.items() if name not in ops),
+    ops.register("ref", GENERIC_OP, zana_ops.none, impl=Ref, trap=None),
+    ops.register("return", GENERIC_OP, zana_ops.none, impl=Return, trap=None),
+    ops.register("identity", UNARY_OP, zana_ops.identity, impl=Identity, trap=None),
+    ops.register("setattr", BINARY_OP, zana_ops.setattr, impl=MutationClosure),
+    ops.register("setitem", BINARY_OP, zana_ops.setitem, impl=MutationClosure),
+    *(ops.register(name, otp) for name, otp in _builtin_ops.items() if name not in ops),
 ]
+
+
+_IDENTITY = Identity()
 
 this = _THIS = magic[_T_Co]()

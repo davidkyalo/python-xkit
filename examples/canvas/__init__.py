@@ -3,13 +3,13 @@ from itertools import groupby
 import attr
 
 from zana.canvas import (
-    BinaryOpClosure,
+    BinaryClosure,
     Closure,
     GenericClosure,
     Identity,
-    OperatorInfo,
-    Ref,
+    Operator,
     UnaryClosure,
+    Val,
     operator,
 )
 from zana.util import subclasses
@@ -36,17 +36,17 @@ def dump_attrs(cls: type, title="attrs", pre=None, sep="\n  ", indent=""):
 
 
 def run():
-    print(dump_attrs(Ref))
+    print(dump_attrs(Val))
     print(dump_attrs(Identity))
     print(dump_attrs(Closure))
     print(dump_attrs(UnaryClosure))
-    print(dump_attrs(BinaryOpClosure))
+    print(dump_attrs(BinaryClosure))
     print(dump_attrs(GenericClosure))
 
     print("\n", "-" * 40, "\n")
-    op: OperatorInfo[Closure]
+    op: Operator[Closure]
     for i, (tp, ops) in enumerate(
-        groupby(operator.values(), lambda o: o if o.name in ("ref", "identity") else o.type), 1
+        groupby(operator.values(), lambda o: o if o.name in ("ref", "identity") else o.impl), 1
     ):
         op, *_ = ops
         indent = " " * 4

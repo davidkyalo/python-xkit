@@ -1,6 +1,6 @@
 from copy import copy, deepcopy
 
-from zana.canvas import Ref, compose, magic, operator
+from zana.canvas import Val, compose, magic, operator
 from zana.testing.mock import StaticMagicMock, StaticMock, StaticPropertyMock
 
 
@@ -15,7 +15,7 @@ class test_integration:
             bar = mk_bar
 
         mk_foo.return_value = FooMock()
-        args = magic().xyz(), Ref(StaticMock()), StaticMock()
+        args = magic().xyz(), Val(StaticMock()), StaticMock()
         foo = magic().abc["xyz"].foo
         foo_rv = foo(*args)
         src = +foo_rv.bar

@@ -10,17 +10,16 @@ from unittest.mock import Mock
 import pytest as pyt
 
 from zana.canvas import (
+    ALL_OPERATORS,
     AbcNestedClosure,
     AbcNestedLazyClosure,
     AbcRootClosure,
     AbcRootLazyClosure,
     Closure,
     Identity,
-    OperatorInfo,
-    OpType,
-    Ref,
+    Operator,
     Return,
-    _builtin_ops,
+    Val,
     compose,
     operator,
 )
@@ -29,13 +28,13 @@ from zana.util import try_import
 
 
 @pyt.fixture()
-def expr(op: OperatorInfo, expr_args: tuple, expr_kwargs: dict, make_expr):
+def expr(op: Operator, expr_args: tuple, expr_kwargs: dict, make_expr):
     return make_expr(op, *expr_args, **expr_kwargs)
 
 
 @pyt.fixture()
 def make_expr():
-    def make(op: OperatorInfo, *a, **kw):
+    def make(op: Operator, *a, **kw):
         return op(*a, **kw)
 
     return make
@@ -44,24 +43,6 @@ def make_expr():
 @pyt.fixture
 def op_params(request, op_name):
     return deepcopy(request.instance.operators[op_name])
-
-
-@pyt.fixture()
-def expr_args(op_params: tuple, op: OperatorInfo, expr_mode):
-    match (op.type, expr_mode == "lazy"):
-        case (OpType.UNARY, False) | (OpType.UNARY, True):
-            return ()
-        case (OpType.BINARY, False) | (OpType.VARIANT, False):
-            return tuple(op_params[1:2])
-        case (OpType.BINARY, True):
-            return tuple(map(compose, op_params[1:2]))
-        case (OpType.VARIANT, True):
-            return tuple(tuple(map(compose, it)) for it in op_params[1:2])
-        case (OpType.GENERIC, False):
-            return tuple(op_params[1:3])
-        case (OpType.GENERIC, True):
-            args, kwargs = op_params[1:3]
-            return tuple(map(compose, args)), dict(zip(kwargs, map(compose, kwargs.values())))
 
 
 _py_ops = {
@@ -73,7 +54,7 @@ _py_ops = {
 
 class test_Registry:
     def test(self):
-        builtin = _builtin_ops | _py_ops
+        builtin = ALL_OPERATORS | _py_ops
         available = {*operator} & {*builtin}
         print(operator)
         assert len(builtin) >= 51 <= min(len(available), len(operator))
@@ -84,9 +65,9 @@ class test_Registry:
         dct = compose(dict(abc=abc, xyz=xyz), many=True)
         st = compose({abc, xyz}, many=True)
         ls = compose([abc, xyz], many=True)
-        assert dct == dict(abc=abc.__zana_compose__.return_value, xyz=Ref(xyz))
-        assert st == {abc.__zana_compose__.return_value, Ref(xyz)}
-        assert ls == [abc.__zana_compose__.return_value, Ref(xyz)]
+        assert dct == dict(abc=abc.__zana_compose__.return_value, xyz=Val(xyz))
+        assert st == {abc.__zana_compose__.return_value, Val(xyz)}
+        assert ls == [abc.__zana_compose__.return_value, Val(xyz)]
 
         with pyt.raises(TypeError):
             compose(1, many=True)
@@ -120,8 +101,8 @@ class test_Identity:
 class test_Ref:
     def test(self):
         mk = StaticMock()
-        obj = Ref(mk)
-        other_e, other_o = StaticMock(Closure), StaticMock(Ref)
+        obj = Val(mk)
+        other_e, other_o = StaticMock(Closure), StaticMock(Val)
 
         assert obj.is_root is True
         assert obj.lazy is False
@@ -159,7 +140,7 @@ class test_Return:
         assert obj == cp == dcp
         assert obj(arg) is mk is obj()
 
-        assert Ref(678) | obj is obj
+        assert Val(678) | obj is obj
         assert other_or | obj is obj
         assert obj | other_e is other_e.lift.return_value
         other_e.lift.assert_called_once_with(obj)
@@ -266,6 +247,13 @@ class test_BinaryOpExpression:
             pyt.skip(f"install implementation")
         return name
 
+    @pyt.fixture()
+    def expr_args(self, op_params: tuple, expr_mode):
+        args = op_params[1:2]
+        if expr_mode == "lazy":
+            args = compose(args, many=True)
+        return tuple(args)
+
     def test(self, expr: Closure, op_params, expr_type):
         this, other, expected = op_params
         print(expr.name, str(expr), repr(expr), repr(expr.operator), sep="\n  -")
@@ -304,6 +292,13 @@ class test_MutationClosure:
     @pyt.fixture(params=[*operators])
     def op_name(self, request: pyt.FixtureRequest):
         return request.param
+
+    @pyt.fixture()
+    def expr_args(self, op_params: tuple, expr_mode):
+        args = op_params[1:2]
+        if expr_mode == "lazy":
+            args = compose(args, many=True)
+        return tuple(args)
 
     def test(self, expr: Closure, op_params, expr_type):
         this, _, arg, expected = op_params
@@ -349,6 +344,13 @@ class test_GenericOpExpression:
     @pyt.fixture(params=[*operators])
     def op_name(self, request: pyt.FixtureRequest):
         return request.param
+
+    @pyt.fixture()
+    def expr_args(self, op_params: tuple, expr_mode):
+        args = op_params[1:3]
+        if expr_mode == "lazy":
+            args = compose(args, many=True, depth=2)
+        return tuple(args)
 
     def test(self, expr: Closure, op_params, expr_type):
         conf = self.operators[expr.name]
