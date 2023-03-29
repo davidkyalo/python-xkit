@@ -38,7 +38,7 @@ __This package is still in active development and should not be used in producti
 [pyversions-image]: https://img.shields.io/pypi/pyversions/zana.svg
 [pyversions-link]: https://pypi.python.org/pypi/zana
 [ci-image]: https://github.com/python-zana/zana/actions/workflows/workflow.yaml/badge.svg?event=push&branch=main
-[ci-link]: https://github.com/python-zana/zana/actions?query=workflow%3ACI%2FCD+event%3Apush+branch%3Amaster
+[ci-link]: https://github.com/python-zana/zana/actions?query=workflow%3ACI%2FCD+event%3Apush+branch%3Amain
 [codecov-image]: https://codecov.io/gh/python-zana/zana/branch/main/graph/badge.svg
 [codecov-link]: https://codecov.io/gh/python-zana/zana
 
