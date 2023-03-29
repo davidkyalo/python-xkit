@@ -33,7 +33,7 @@ class test_magic:
         if is_root:
             assert not obj
         else:
-            assert compose(src) is obj.__zana_compose__() is obj._(...)
+            assert compose(src) is obj.__zana_compose__() is obj(...)
 
         args = tuple(f"var_{i}" for i in range(min(5, op.impl.max_nargs)))
         if is_lazy:

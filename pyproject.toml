@@ -1,6 +1,6 @@
 [tool.poetry]
 name = "zana"
-version = "0.2.0a0"
+version = "0.2.0a1"
 description = "general utility functions and types"
 authors = ["David Kyalo <davidmkyalo@gmail.com>"]
 license = "MIT"
@@ -82,6 +82,9 @@ exclude_lines = [
     "if\\s+([a-zA-Z0-9_]+\\.)?TYPE_CHECKING",
     "class .*\\bProtocol\\):",
     "@(abc\\.)?abstractmethod",
+]
+omit = [
+    "zana/types/mypy_plugin.py"
 ]
 
 

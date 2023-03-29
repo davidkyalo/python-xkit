@@ -7,7 +7,7 @@ from functools import cache, reduce
 from itertools import chain
 from logging import getLogger
 from operator import attrgetter
-from types import GenericAlias
+from types import EllipsisType, GenericAlias
 
 import attr
 from typing_extensions import Self
@@ -156,7 +156,7 @@ class Composable(Interface, t.Generic[_T_Co], parent="Closure"):
     def __zana_compose__(self) -> "Closure[_T_Co]":
         ...
 
-    def _(self, _: ...) -> "Closure[_T_Co]":
+    def __call__(self, _: EllipsisType) -> "Closure[_T_Co]":
         ...
 
 
@@ -607,7 +607,7 @@ class Composer(t.Generic[_T_Co]):
     __zana_composer_src__: UnaryClosure[_T_Co] | BinaryClosure[_T_Co] | GenericClosure[
         _T_Co
     ] | Closure[_T_Co]
-    __zana_compose_arg__: t.ClassVar = ...
+    __zana_compose_args__: t.ClassVar = (...,)
     __zana_compose_attr__: t.ClassVar = "_"
     __class_getitem__ = classmethod(GenericAlias)
 
@@ -631,11 +631,14 @@ class Composer(t.Generic[_T_Co]):
     def __deepcopy__(self, memo):
         return type(self)(deepcopy(self.__zana_composer_src__, memo))
 
+    if t.TYPE_CHECKING:
+
+        def __call__(self, _: EllipsisType) -> Closure[_T_Co]:
+            ...
+
     def __zana_composer_call__(self, *args, **kwds) -> _T_Co | Composable[_T_Co]:
-        if not kwds and len(args) == 1 and args[0] is self.__zana_compose_arg__:
-            src = self.__zana_composer_src__
-            if src.operator is registry.getattr and src.operant == self.__zana_compose_attr__:
-                return src.source
+        if not kwds and args == self.__zana_compose_args__:
+            return self.__zana_compose__()
         return self.__zana_composer_call__(*args, **kwds)
 
     @classmethod
