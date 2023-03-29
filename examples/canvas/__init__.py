@@ -10,7 +10,7 @@ from zana.canvas import (
     Operator,
     UnaryClosure,
     Val,
-    operator,
+    registry,
 )
 from zana.util import subclasses
 
@@ -35,7 +35,7 @@ def dump_attrs(cls: type, title="attrs", pre=None, sep="\n  ", indent=""):
     return it if sep is None else sep.join(it)
 
 
-def run():
+def _run():
     print(dump_attrs(Val))
     print(dump_attrs(Identity))
     print(dump_attrs(Closure))
@@ -46,7 +46,7 @@ def run():
     print("\n", "-" * 40, "\n")
     op: Operator[Closure]
     for i, (tp, ops) in enumerate(
-        groupby(operator.values(), lambda o: o if o.name in ("ref", "identity") else o.impl), 1
+        groupby(registry.values(), lambda o: o if o.name in ("ref", "identity") else o.impl), 1
     ):
         op, *_ = ops
         indent = " " * 4
@@ -60,3 +60,7 @@ def run():
 
     # for sub in subclasses(Expression):
     #     print(f"{sub}")
+
+
+def __getattr__(*a, **kw):
+    print(f"{a =}, {kw =}")

@@ -14,9 +14,12 @@ Parts of this module is Copyright by Werkzeug Team.
 
 import sys
 import typing as t
+import warnings
 from abc import abstractmethod
 from collections import abc
-from functools import cache, reduce
+from functools import cache, lru_cache, reduce
+from hashlib import md5
+from logging import getLogger
 from types import GenericAlias, ModuleType
 
 from typing_extensions import Concatenate, ParamSpec, Self
@@ -27,6 +30,7 @@ __all__ = ("Proxy", "PromiseProxy", "try_import", "unproxy")
 
 __module__ = __name__  # used by Proxy class body
 
+logger = getLogger(__name__)
 _object_new = object.__new__
 _object_setattr = object.__setattr__
 _object_getattribute = object.__getattribute__
@@ -97,6 +101,14 @@ class GetsCurrent(t.Protocol[_R]):
         pass
 
 
+@lru_cache(16)
+def _deprecation_warn(cls: type, id: int):
+    new = "CachingProxy" if cls is PromiseProxy else cls.__name__
+    msg = f"'{cls.__module__}.{cls.__name__}' is deprecated in favor of 'zana.canvas.proxy.{new}'."
+    logger.error(msg)
+    warnings.warn(msg, DeprecationWarning, stacklevel=3)
+
+
 class Proxy(t.Generic[_R]):
     """Proxy to another object."""
 
@@ -127,6 +139,8 @@ class Proxy(t.Generic[_R]):
             _object_setattr(self, "__custom_name__", __name__)
         if __doc__ is not None:
             _object_setattr(self, "__doc__", __doc__)
+
+        _deprecation_warn(cls, id(self))
 
         return t.cast(t.Union[_R, GetsCurrent[_R]], self)
 
@@ -174,6 +188,7 @@ class Proxy(t.Generic[_R]):
         object behind the proxy at a time for performance reasons or because
         you want to pass the object into a different context.
         """
+        _deprecation_warn(type(self), id(self))
         loc: abc.Callable[_P, _R] = _object_getattribute(self, "_Proxy__local")
         if not hasattr(loc, "__release_local__"):
             return loc(*self.__args, *a, **self.__kwargs | kw)

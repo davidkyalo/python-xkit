@@ -21,8 +21,8 @@ from zana.canvas import (
     Return,
     Val,
     compose,
-    operator,
 )
+from zana.canvas.operator import registry
 from zana.testing.mock import StaticMock
 from zana.util import try_import
 
@@ -55,9 +55,10 @@ _py_ops = {
 class test_Registry:
     def test(self):
         builtin = ALL_OPERATORS | _py_ops
-        available = {*operator} & {*builtin}
-        print(operator)
-        assert len(builtin) >= 51 <= min(len(available), len(operator))
+        available = {*registry} & {*builtin}
+        print(registry)
+        assert len(builtin) >= 51 <= min(len(available), len(registry))
+        assert registry is registry.__aliases__
 
     def test_compose(self):
         abc = StaticMock(Closure)
