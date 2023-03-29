@@ -16,6 +16,7 @@ from .core import (
     Val,
     compose,
     magic,
+    maybe_compose,
 )
 from .operator import (
     ALL_OPERATORS,
@@ -49,6 +50,6 @@ __all__ = [
     "Val",
     "compose",
     "magic",
-    "operator",
+    "maybe_compose",
     "ops",
 ]

@@ -81,7 +81,7 @@ class SupportsProxy(t.Protocol[_R]):
         pass
 
     @abstractmethod
-    def __proxy_cached_target__(self, default: ... = _empty) -> _R:
+    def __proxy_cached_target__(self, default: t.Any = _empty) -> _R:
         ...
 
     @abstractmethod
@@ -392,7 +392,7 @@ class CachingProxy(Proxy[_R]):
         except AttributeError:
             return self.__proxy_target_evaluate__()
 
-    def __proxy_cached_target__(self, default: ... = _empty):
+    def __proxy_cached_target__(self, default: t.Any = _empty):
         try:
             return _object_getattribute(self, "_CachingProxy__thing")
         except AttributeError:

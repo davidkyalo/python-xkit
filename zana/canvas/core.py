@@ -115,6 +115,20 @@ def compose(obj=_notset, **kw):
         return Val(obj)
 
 
+def maybe_compose(obj, **kw):
+    if isinstance(obj, Composable):
+        return obj.__zana_compose__()
+    elif kw.get("many") and kw.setdefault("depth", 1) > 0:
+        kw["depth"] -= 1
+        if isinstance(obj, (abc.Sequence, abc.Iterator)):
+            return [maybe_compose(o, **kw) for o in obj]
+        elif isinstance(obj, abc.Mapping):
+            return {k: maybe_compose(v, **kw) for k, v in obj.items()}
+        elif isinstance(obj, abc.Set):
+            return {maybe_compose(v, **kw) for v in obj}
+    return obj
+
+
 class AbcNestedClosure(Interface[_T_Co], parent="Closure"):
     @abstractmethod
     def __call_nested__(self, *a, **kw) -> _T_Co:
