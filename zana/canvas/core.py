@@ -678,7 +678,7 @@ class Composer(t.Generic[_T_Co]):
 class magic(Composer[_T_Co]):
     __slots__ = ()
 
-    def forbid(nm):
+    def forbid(nm):  # type: ignore
         def meth(self, *a, **kw) -> None:  # pragma: no cover
             raise TypeError(f"none trappable operation {nm!r}")
 
@@ -692,5 +692,3 @@ class magic(Composer[_T_Co]):
 
 
 this = _THIS = magic[_T_Co]()
-
-from .operator import registry
