@@ -136,13 +136,14 @@ class Interface(ABC):
                         f_members(),
                     )
                     names = self.__abstractmethods__ if members is None else members
-                    msg = (
-                        f"issubclass({sub.__name__},  {cls.__name__}) {parents = }, {forbidden = }\n -->"
-                        f""
-                        f"{predicate.__name__}({sub.__name__}, {[*names]}, {check}) is "
-                        f"{expected} = {predicate(sub, names, check) is expected}\n"
-                    )
-                    logger.error(msg)
+
+                    # msg = (
+                    #     f"issubclass({sub.__name__},  {cls.__name__}) {parents = }, {forbidden = }\n -->"
+                    #     f""
+                    #     f"{predicate.__name__}({sub.__name__}, {[*names]}, {check}) is "
+                    #     f"{expected} = {predicate(sub, names, check) is expected}\n"
+                    # )
+                    # logger.error(msg)
 
                     if all(issubclass(sub, p) for p in parents):
                         if not (forbidden and issubclass(sub, forbidden)):
@@ -156,6 +157,9 @@ class Interface(ABC):
                 raise TypeError(f"interfaces cannot be instantiated. {cls} called.")
 
             cls.__init__ = cls.__new__ = __new__
+            logger.error(
+                f"{cls.__name__!r} subclasses '{__name__}.Interface' which is not tested. USE AT YOUR RISK!"
+            )
 
 
 class Descriptor(Interface, t.Generic[_T, _RT], total=False):
