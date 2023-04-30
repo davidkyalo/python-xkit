@@ -1,6 +1,6 @@
 import typing as t
 from collections import abc
-from functools import reduce
+from functools import partial, reduce
 from importlib import import_module
 from threading import RLock
 from unittest import skip
@@ -85,7 +85,10 @@ def _dictpop(self, obj: object):
 
 
 def subclasses(*bases: type[_T], inclusive: bool = True, depth: int = -1, __skip=None, __lvl=0):
-    """ """
+    """A recursive iterator over given bases' subclasses.
+    By default, it yields all known types that can pass the
+    `issubclass(cls, bases)` test. And this includes the bases themselves.
+    """
     __skip = set() if __skip is None else __skip
     kwds = {"depth": depth, "__lvl": __lvl + 1, "__skip": __skip}
     for base in bases:
@@ -93,6 +96,16 @@ def subclasses(*bases: type[_T], inclusive: bool = True, depth: int = -1, __skip
             yield base
         if depth - __lvl:
             yield from subclasses(*base.__subclasses__(), **kwds)
+
+
+@t.overload
+def xsubclasses(*bases: type[_T], depth: int = -1) -> abc.Generator[type[_T]]:
+    """A recursive iterator over given classes' subclasses exclusive of the given `bases`.
+    Same as calling `subclasses(*bases, inclusive=False)`
+    """
+
+
+xsubclasses = partial(subclasses, inclusive=False)
 
 
 class class_property(t.Generic[_R]):
